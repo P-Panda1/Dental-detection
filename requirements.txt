@@ -1,3 +1,7 @@
 torch
+torchvision
+torch-geometric
 numpy<2.0
 scipy
+scikit-learn
+pyvista
