@@ -31,7 +31,7 @@ class DentalDataset(Dataset):
 
         # Color Map: Red=1 (Gum), Black=2 (Border), White=3 (Teeth)
         # Using .get() to avoid KeyError if array is named differently
-        colors = mesh.point_data.get('colors') or mesh.point_data.get('RGB')
+        colors = mesh.point_data.get('colors') or mesh.point_data.get('RGBA')
         y = torch.zeros(len(pos), dtype=torch.long)
 
         if colors is not None:
@@ -66,7 +66,7 @@ def get_dental_loaders(data_path, batch_size=2, num_points=8192):
     dataset = DentalDataset(root=data_path)
 
     # 3. Split: 3 train, 1 val, 1 test
-    train_set, val_set, test_set = random_split(dataset, [3, 1, 1])
+    train_set, val_set, test_set = random_split(dataset, [4, 1, 0])
 
     # Assign transforms to the underlying dataset objects
     train_set.dataset.transform = train_transform
@@ -81,9 +81,9 @@ def get_dental_loaders(data_path, batch_size=2, num_points=8192):
 
 
 # Example Usage
-if __name__ == "__main__":
-    t_loader, v_loader, _ = get_dental_loaders("../data/annotated/")
-    for batch in t_loader:
-        print(
-            f"Batch loaded with {batch.num_graphs} jaws and {batch.pos.shape} points.")
-        break
+# if __name__ == "__main__":
+#     t_loader, v_loader, _ = get_dental_loaders("../data/annotated/")
+#     for batch in t_loader:
+#         print(
+#             f"Batch loaded with {batch.num_graphs} jaws and {batch.pos.shape} points.")
+#         break
