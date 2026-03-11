@@ -43,6 +43,9 @@ pip install "torch>=1.13.1" "torchvision>=0.14.1" --extra-index-url https://down
 # Install PyG - use CPU wheels matching torch here. Check PyG docs for the exact command.
 pip install torch-geometric -f https://data.pyg.org/whl/torch-1.13.1+cpu.html
 
+# Install torch-cluster 
+pip install torch-cluster -f https://data.pyg.org/whl/torch-$(python -c "import torch; print(torch.__version__.split('+')[0])").html
+
 # Install the rest
 pip install -r requirements.txt
 ```
