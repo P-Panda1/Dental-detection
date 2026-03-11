@@ -17,11 +17,13 @@ from transformations import (
 class DentalDataset(Dataset):
     def __init__(self, root, transform=None):
         super().__init__(root, transform)
-        self.root = root
-        # Check if directory exists before listing
-        if not os.path.exists(root):
-            raise FileNotFoundError(f"Directory not found: {root}")
-        self.files = [f for f in os.listdir(root) if f.endswith('.ply')]
+        self.root = os.path.abspath(root)  # Ensure absolute
+        if not os.path.exists(self.root):
+            raise FileNotFoundError(f"Directory not found: {self.root}")
+
+        self.files = [f for f in os.listdir(self.root) if f.endswith('.ply')]
+        print(
+            f"--- Dataset initialized: Found {len(self.files)} .ply files in {self.root} ---")
 
     def len(self):
         return len(self.files)
