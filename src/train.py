@@ -1,3 +1,5 @@
+from IPython.display import Image, display
+import pyvista as pv
 import torch
 import torch.nn.functional as F
 import pyvista as pv
@@ -37,54 +39,63 @@ def save_checkpoint(model, optimizer, epoch, loss, is_best=False):
 
 def validate_and_plot(model, loader, epoch, device):
     model.eval()
-    # Get the first sample from the validation set
     try:
         data = next(iter(loader)).to(device)
     except StopIteration:
-        return 1e9  # Return high loss if loader is empty
+        return 1e9
 
     with torch.no_grad():
         logits = model(data)
-        # Calculate val loss for checkpointing
         val_loss = F.cross_entropy(
             logits, data.y - 1, weight=config.LOSS_WEIGHTS)
         preds = torch.argmax(logits, dim=1).cpu().numpy()
 
-    # Define color map for plotting
-    pred_colors = np.zeros((len(preds), 3), dtype=np.uint8)
-    pred_colors[preds == 0] = [255, 0, 0]   # Gum
-    pred_colors[preds == 1] = [0, 0, 0]     # Border
-    pred_colors[preds == 2] = [255, 255, 255]  # Tooth
-
-    # Visualization
-    plotter = pv.Plotter(shape=(1, 2), title=f"Epoch {epoch} Comparison")
-
-    # Ground Truth
-    plotter.subplot(0, 0)
-    plotter.add_text("Ground Truth")
-    gt_colors = np.zeros((len(data.y), 3), dtype=np.uint8)
+    # IMMEDIATELY move everything to CPU and clear GPU cache
+    points = data.pos.cpu().numpy()
     y_cpu = data.y.cpu().numpy()
+    torch.cuda.empty_cache()
+
+    # Prepare Colors
+    gt_colors = np.zeros((len(y_cpu), 3), dtype=np.uint8)
     gt_colors[y_cpu == 1] = [255, 0, 0]
     gt_colors[y_cpu == 2] = [0, 0, 0]
     gt_colors[y_cpu == 3] = [255, 255, 255]
-    plotter.add_mesh(pv.PolyData(data.pos.cpu().numpy()),
-                     scalars=gt_colors, rgb=True, point_size=5)
 
-    # Prediction
-    plotter.subplot(0, 1)
-    plotter.add_text("ArcFace Prediction")
-    plotter.add_mesh(pv.PolyData(data.pos.cpu().numpy()),
-                     scalars=pred_colors, rgb=True, point_size=5)
+    pred_colors = np.zeros((len(preds), 3), dtype=np.uint8)
+    pred_colors[preds == 0] = [255, 0, 0]
+    pred_colors[preds == 1] = [0, 0, 0]
+    pred_colors[preds == 2] = [255, 255, 255]
 
-    plotter.link_views()
-    plotter.show()
+    # Force a totally headless, software-only render
+    try:
+        # Create a clean folder for logs
+        os.makedirs("val_plots", exist_ok=True)
+
+        pv.OFF_SCREEN = True
+        plotter = pv.Plotter(shape=(1, 2), off_screen=True)
+
+        plotter.subplot(0, 0)
+        plotter.add_mesh(pv.PolyData(points),
+                         scalars=gt_colors, rgb=True, point_size=4)
+
+        plotter.subplot(0, 1)
+        plotter.add_mesh(pv.PolyData(points),
+                         scalars=pred_colors, rgb=True, point_size=4)
+
+        save_path = f"val_plots/epoch_{epoch}.png"
+        plotter.screenshot(save_path)
+        plotter.close()
+        print(f"--- Plot saved to {save_path} ---")
+
+    except Exception as e:
+        print(f"Visualization failed but training continues: {e}")
 
     return val_loss.item()
 
 
 def train():
     train_loader, val_loader, _ = get_dental_loaders(
-        config.DATA_DIR, batch_size=config.BATCH_SIZE)
+        "../data", batch_size=config.BATCH_SIZE)
 
     model = DentalMetricDGCNN(
         k=config.K_NEIGHBORS,
@@ -117,8 +128,16 @@ def train():
 
         # Periodic Validation, Plotting, and Saving
         if epoch % 5 == 0 or epoch == 1:
-            val_loss = validate_and_plot(
-                model, val_loader, epoch, config.DEVICE)
+            # Validation and Saving (No Plotting)
+            model.eval()
+            with torch.no_grad():
+                val_batch = next(iter(val_loader)).to(config.DEVICE)
+                val_logits = model(val_batch)
+                val_loss = F.cross_entropy(
+                    val_logits, val_batch.y - 1, weight=config.LOSS_WEIGHTS).item()
+
+            print(
+                f"Epoch {epoch} | Train: {avg_train_loss:.4f} | Val: {val_loss:.4f}")
 
             # Check if this is the best model so far
             is_best = val_loss < best_val_loss

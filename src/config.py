@@ -6,7 +6,9 @@ class DentalActiveConfig:
 
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    DATA_DIR = "./data"
+    DATA_DIR = "../data/"
+
+    CHECKPOINT_DIR = "./model"
 
     # --- Classification (No Background) ---
     # 0: Gum (Red), 1: Border (Black), 2: Tooth (White)
@@ -22,7 +24,7 @@ class DentalActiveConfig:
     GLOBAL_EMBED_DIM = 1024
 
     # --- Training ---
-    BATCH_SIZE = 4
+    BATCH_SIZE = 1
     LR = 1e-3
     WEIGHT_DECAY = 1e-4
     EPOCHS = 100
