@@ -51,12 +51,13 @@ class DentalDataset(Dataset):
 # Wrapper to apply different transforms to subsets
 
 
-class TransformSubset(torch.utils.data.Subset):
+class TransformSubset(torch.utils.data.Dataset):
     def __init__(self, subset, transform=None):
         self.subset = subset
         self.transform = transform
 
     def __getitem__(self, index):
+        # subset[index] already gives us the Data object from DentalDataset
         data = self.subset[index]
         if self.transform:
             data = self.transform(data)
