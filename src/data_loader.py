@@ -84,16 +84,23 @@ def get_dental_loaders(data_path, batch_size=2, num_points=8192):
 
     dataset = DentalDataset(root=data_path)
 
-    # Split: 4 train, 1 val (Match your [4, 1, 0] split)
-    train_indices, val_indices, _ = random_split(
-        range(len(dataset)), [4, 1, 0])
+    # Generate indices for the split
+    total_count = len(dataset)
+    indices = list(range(total_count))
 
-    # Wrap indices with their respective transforms
-    train_set = TransformSubset(torch.utils.data.Subset(
-        dataset, train_indices), transform=train_transform)
-    val_set = TransformSubset(torch.utils.data.Subset(
-        dataset, val_indices), transform=val_transform)
+    # Example: 4 for train, 1 for val (if you have 5 files)
+    train_indices = indices[:4]
+    val_indices = indices[4:5]
 
+    # Create the subsets
+    train_subset = torch.utils.data.Subset(dataset, train_indices)
+    val_subset = torch.utils.data.Subset(dataset, val_indices)
+
+    # Wrap them with their respective transforms
+    train_set = TransformSubset(train_subset, transform=train_transform)
+    val_set = TransformSubset(val_subset, transform=val_transform)
+
+    # Use the PyG DataLoader (important for batching graphs correctly)
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_set, batch_size=1, shuffle=False)
 
