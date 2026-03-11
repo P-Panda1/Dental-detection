@@ -7,7 +7,7 @@ from torch_geometric.transforms import Compose, NormalizeScale, FixedPoints
 from torch.utils.data import random_split
 
 # Import from our other file
-from transforms import (
+from transformations import (
     RobustCanonicalAlignment,
     RandomizedDentalBandStretch,
     AnatomicalDentalStretch
