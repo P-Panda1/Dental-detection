@@ -44,7 +44,9 @@ pip install "torch>=1.13.1" "torchvision>=0.14.1" --extra-index-url https://down
 pip install torch-geometric -f https://data.pyg.org/whl/torch-1.13.1+cpu.html
 
 # Install torch-cluster 
-pip install torch-cluster -f https://data.pyg.org/whl/torch-$(python -c "import torch; print(torch.__version__.split('+')[0])").html
+# Using this should work in all cases 
+# pip install torch-cluster -f https://data.pyg.org/whl/torch-$(python -c "import torch; print(torch.__version__.split('+')[0])").html
+pip install --no-index torch-cluster -f https://data.pyg.org/whl/torch-2.4.1+cu124.html
 
 # Install the rest
 pip install -r requirements.txt
