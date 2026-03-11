@@ -1,3 +1,4 @@
+import multiprocessing
 from IPython.display import Image, display
 import pyvista as pv
 import torch
@@ -37,60 +38,42 @@ def save_checkpoint(model, optimizer, epoch, loss, is_best=False):
         print(f"--- Best model saved at Epoch {epoch} ---")
 
 
-def validate_and_plot(model, loader, epoch, device):
-    model.eval()
+def isolated_plotter(points, gt_y, preds, epoch):
+    """
+    Runs in a separate process to avoid OpenGL/CUDA collisions.
+    """
     try:
-        data = next(iter(loader)).to(device)
-    except StopIteration:
-        return 1e9
-
-    with torch.no_grad():
-        logits = model(data)
-        val_loss = F.cross_entropy(
-            logits, data.y - 1, weight=config.LOSS_WEIGHTS)
-        preds = torch.argmax(logits, dim=1).cpu().numpy()
-
-    # IMMEDIATELY move everything to CPU and clear GPU cache
-    points = data.pos.cpu().numpy()
-    y_cpu = data.y.cpu().numpy()
-    torch.cuda.empty_cache()
-
-    # Prepare Colors
-    gt_colors = np.zeros((len(y_cpu), 3), dtype=np.uint8)
-    gt_colors[y_cpu == 1] = [255, 0, 0]
-    gt_colors[y_cpu == 2] = [0, 0, 0]
-    gt_colors[y_cpu == 3] = [255, 255, 255]
-
-    pred_colors = np.zeros((len(preds), 3), dtype=np.uint8)
-    pred_colors[preds == 0] = [255, 0, 0]
-    pred_colors[preds == 1] = [0, 0, 0]
-    pred_colors[preds == 2] = [255, 255, 255]
-
-    # Force a totally headless, software-only render
-    try:
-        # Create a clean folder for logs
         os.makedirs("val_plots", exist_ok=True)
-
         pv.OFF_SCREEN = True
+
+        # Setup colors
+        gt_colors = np.zeros((len(gt_y), 3), dtype=np.uint8)
+        gt_colors[gt_y == 1] = [255, 0, 0]   # Gum
+        gt_colors[gt_y == 2] = [0, 0, 0]     # Border
+        gt_colors[gt_y == 3] = [255, 255, 255]  # Tooth
+
+        pred_colors = np.zeros((len(preds), 3), dtype=np.uint8)
+        pred_colors[preds == 0] = [255, 0, 0]
+        pred_colors[preds == 1] = [0, 0, 0]
+        pred_colors[preds == 2] = [255, 255, 255]
+
         plotter = pv.Plotter(shape=(1, 2), off_screen=True)
 
         plotter.subplot(0, 0)
         plotter.add_mesh(pv.PolyData(points),
                          scalars=gt_colors, rgb=True, point_size=4)
+        plotter.add_text("Ground Truth", font_size=10)
 
         plotter.subplot(0, 1)
         plotter.add_mesh(pv.PolyData(points),
                          scalars=pred_colors, rgb=True, point_size=4)
+        plotter.add_text(f"Pred Epoch {epoch}", font_size=10)
 
         save_path = f"val_plots/epoch_{epoch}.png"
         plotter.screenshot(save_path)
         plotter.close()
-        print(f"--- Plot saved to {save_path} ---")
-
     except Exception as e:
-        print(f"Visualization failed but training continues: {e}")
-
-    return val_loss.item()
+        print(f"Plotting process failed: {e}")
 
 
 def train():
@@ -103,16 +86,20 @@ def train():
         embed_dim=config.GLOBAL_EMBED_DIM // 8
     ).to(config.DEVICE)
 
+    # --- LOAD BEST MODEL IF IT EXISTS ---
+    best_path = os.path.join(config.CHECKPOINT_DIR, "best_model.pth")
+    if os.path.exists(best_path):
+        print(f"--- Loading existing best model from {best_path} ---")
+        checkpoint = torch.load(best_path, map_location=config.DEVICE)
+        model.load_state_dict(checkpoint['state_dict'])
+
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=config.LR, weight_decay=config.WEIGHT_DECAY)
-
     best_val_loss = float('inf')
-    print(f"Starting training on {config.DEVICE}...")
 
     for epoch in range(1, config.EPOCHS + 1):
         model.train()
         total_train_loss = 0
-
         for batch in tqdm(train_loader, desc=f"Epoch {epoch}"):
             batch = batch.to(config.DEVICE)
             optimizer.zero_grad()
@@ -123,29 +110,44 @@ def train():
             optimizer.step()
             total_train_loss += loss.item()
 
-        avg_train_loss = total_train_loss / len(train_loader)
-        print(f"Epoch {epoch} | Train Loss: {avg_train_loss:.4f}")
-
-        # Periodic Validation, Plotting, and Saving
+        # --- VALIDATION & PLOTTING ---
         if epoch % 5 == 0 or epoch == 1:
-            # Validation and Saving (No Plotting)
             model.eval()
             with torch.no_grad():
                 val_batch = next(iter(val_loader)).to(config.DEVICE)
                 val_logits = model(val_batch)
                 val_loss = F.cross_entropy(
                     val_logits, val_batch.y - 1, weight=config.LOSS_WEIGHTS).item()
+                preds = torch.argmax(val_logits, dim=1).cpu().numpy()
 
-            print(
-                f"Epoch {epoch} | Train: {avg_train_loss:.4f} | Val: {val_loss:.4f}")
+                # Move to CPU for plotting
+                points_cpu = val_batch.pos.cpu().numpy()
+                gt_y_cpu = val_batch.y.cpu().numpy()
 
-            # Check if this is the best model so far
-            is_best = val_loss < best_val_loss
-            if is_best:
+            print(f"Epoch {epoch} | Val Loss: {val_loss:.4f}")
+
+            # Spawn the plotter in a SEPARATE process
+            p = multiprocessing.Process(target=isolated_plotter, args=(
+                points_cpu, gt_y_cpu, preds, epoch))
+            p.start()
+            p.join()  # Wait for it to finish so we can display it
+
+            # Show the image in Jupyter
+            img_path = f"val_plots/epoch_{epoch}.png"
+            if os.path.exists(img_path):
+                display(Image(filename=img_path))
+
+            # Save Checkpoint
+            if val_loss < best_val_loss:
                 best_val_loss = val_loss
-
-            save_checkpoint(model, optimizer, epoch, val_loss, is_best=is_best)
+                save_checkpoint(model, optimizer, epoch,
+                                val_loss, is_best=True)
+            else:
+                save_checkpoint(model, optimizer, epoch,
+                                val_loss, is_best=False)
 
 
 if __name__ == "__main__":
+    # Multiprocessing fix for Windows/Jupyter
+    multiprocessing.set_start_method('spawn', force=True)
     train()
