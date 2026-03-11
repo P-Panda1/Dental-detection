@@ -6,7 +6,7 @@ class DentalActiveConfig:
 
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    DATA_DIR = "/data/"
+    DATA_DIR = "./data"
 
     # --- Classification (No Background) ---
     # 0: Gum (Red), 1: Border (Black), 2: Tooth (White)
