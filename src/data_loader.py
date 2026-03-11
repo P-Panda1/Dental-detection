@@ -4,6 +4,7 @@ import pyvista as pv
 from torch_geometric.data import Data, Dataset
 from torch_geometric.loader import DataLoader
 from torch_geometric.transforms import Compose, NormalizeScale, FixedPoints
+from torch_cluster import knn
 from torch.utils.data import random_split
 
 # Import from our other file
@@ -32,19 +33,39 @@ class DentalDataset(Dataset):
         path = os.path.join(self.root, self.files[idx])
         mesh = pv.read(path)
         pos = torch.from_numpy(mesh.points).float()
-
-        # Handle colors (RGBA or RGB)
         colors = mesh.point_data.get('colors') or mesh.point_data.get(
             'RGB') or mesh.point_data.get('RGBA')
 
+        # 1. Create Masks for "Certain" Points
+        is_red = (colors[:, 0] > 180) & (
+            colors[:, 1] < 100) & (colors[:, 2] < 100)
+        is_black = (colors[:, 0] < 80) & (
+            colors[:, 1] < 80) & (colors[:, 2] < 80)
+        is_white = (colors[:, 0] > 180) & (
+            colors[:, 1] > 180) & (colors[:, 2] > 180)
+
+        # 2. Assign initial labels (0 = unknown)
         y = torch.zeros(len(pos), dtype=torch.long)
-        if colors is not None:
-            # Labels: 1=Gum, 2=Border, 3=Tooth
-            y[(colors[:, 0] > 180) & (colors[:, 1] < 100)
-              & (colors[:, 2] < 100)] = 1
-            y[(colors[:, 0] < 80) & (colors[:, 1] < 80) & (colors[:, 2] < 80)] = 2
-            y[(colors[:, 0] > 180) & (colors[:, 1] > 180)
-              & (colors[:, 2] > 180)] = 3
+        y[is_red] = 1
+        y[is_black] = 2
+        y[is_white] = 3
+
+        # 3. Handle Neighbors for Unknown Points
+        unknown_mask = (y == 0)
+        known_mask = ~unknown_mask
+
+        if unknown_mask.any() and known_mask.any():
+            # Find the nearest 'known' point for every 'unknown' point
+            # k=1 because we want the single best neighbor match
+            assign_idx = knn(pos[known_mask], pos[unknown_mask], k=1)
+
+            # Map the neighbor's label to the unknown point
+            # assign_idx[0] is index of unknown point, [1] is index of known neighbor
+            neighbor_labels = y[known_mask][assign_idx[1]]
+            y[unknown_mask] = neighbor_labels
+        elif unknown_mask.all():
+            # Fallback if the file has NO valid colors
+            y = torch.ones(len(pos), dtype=torch.long)
 
         return Data(pos=pos, y=y)
 
