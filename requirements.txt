@@ -4,7 +4,7 @@ torchvision>=0.14.1
 # torch-cluster, torch-spline-conv). Install a matching set for your torch & CUDA version
 # before installing `torch-geometric`. See README.md for an example CPU install flow.
 torch-geometric
-torch-cluster
+# torch-cluster
 numpy<2.0
 scipy
 scikit-learn
