@@ -1,7 +1,17 @@
-torch
-torchvision
+torch>=1.13.1
+torchvision>=0.14.1
+# Note: torch-geometric (PyG) has separate binary dependencies (torch-scatter, torch-sparse,
+# torch-cluster, torch-spline-conv). Install a matching set for your torch & CUDA version
+# before installing `torch-geometric`. See README.md for an example CPU install flow.
 torch-geometric
 numpy<2.0
 scipy
 scikit-learn
 pyvista
+tqdm
+
+# Optional / helper packages often required by PyG (install matching wheels for your torch):
+# torch-scatter
+# torch-sparse
+# torch-cluster
+# torch-spline-conv
