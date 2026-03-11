@@ -23,6 +23,11 @@ class PointArcFace(nn.Module):
         if not self.training or label is None:
             return cosine * self.s
 
+        # Ensure labels are 0, 1, 2.
+        # If your data_loader gives 1, 2, 3, we subtract 1 here.
+        if label.min() >= 1:
+            label = label - 1
+
         # 2. Apply the Angular Margin (ArcFace logic)
         # We clamp for numerical stability before acos
         theta = torch.acos(torch.clamp(cosine, -1.0 + 1e-7, 1.0 - 1e-7))
