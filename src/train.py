@@ -1,3 +1,4 @@
+import matplotlib.pyplot as plt
 import multiprocessing
 from IPython.display import Image, display
 import pyvista as pv
@@ -40,40 +41,41 @@ def save_checkpoint(model, optimizer, epoch, loss, is_best=False):
 
 def isolated_plotter(points, gt_y, preds, epoch):
     """
-    Runs in a separate process to avoid OpenGL/CUDA collisions.
+    Uses Matplotlib for 2D projections. 
+    Mathematically stable and won't crash headless servers.
     """
     try:
         os.makedirs("val_plots", exist_ok=True)
-        pv.OFF_SCREEN = True
 
-        # Setup colors
-        gt_colors = np.zeros((len(gt_y), 3), dtype=np.uint8)
-        gt_colors[gt_y == 1] = [255, 0, 0]   # Gum
-        gt_colors[gt_y == 2] = [0, 0, 0]     # Border
-        gt_colors[gt_y == 3] = [255, 255, 255]  # Tooth
+        # 0: Gum (Red), 1: Border (Black), 2: Tooth (Blue for contrast)
+        color_map = {1: 'red', 2: 'black', 3: 'blue'}
+        pred_map = {0: 'red', 1: 'black', 2: 'blue'}
 
-        pred_colors = np.zeros((len(preds), 3), dtype=np.uint8)
-        pred_colors[preds == 0] = [255, 0, 0]
-        pred_colors[preds == 1] = [0, 0, 0]
-        pred_colors[preds == 2] = [255, 255, 255]
+        fig = plt.figure(figsize=(12, 6))
 
-        plotter = pv.Plotter(shape=(1, 2), off_screen=True)
+        # --- Top View Projection (X and Y coordinates) ---
+        # Ground Truth
+        ax1 = fig.add_subplot(1, 2, 1)
+        ax1.set_title(f"Epoch {epoch} - Ground Truth")
+        colors_gt = [color_map.get(l, 'gray') for l in gt_y]
+        ax1.scatter(points[:, 0], points[:, 1], c=colors_gt, s=0.5, alpha=0.7)
+        ax1.axis('equal')
 
-        plotter.subplot(0, 0)
-        plotter.add_mesh(pv.PolyData(points),
-                         scalars=gt_colors, rgb=True, point_size=4)
-        plotter.add_text("Ground Truth", font_size=10)
+        # Prediction
+        ax2 = fig.add_subplot(1, 2, 2)
+        ax2.set_title(f"Epoch {epoch} - Prediction")
+        colors_pred = [pred_map.get(l, 'gray') for l in preds]
+        ax2.scatter(points[:, 0], points[:, 1],
+                    c=colors_pred, s=0.5, alpha=0.7)
+        ax2.axis('equal')
 
-        plotter.subplot(0, 1)
-        plotter.add_mesh(pv.PolyData(points),
-                         scalars=pred_colors, rgb=True, point_size=4)
-        plotter.add_text(f"Pred Epoch {epoch}", font_size=10)
-
+        plt.tight_layout()
         save_path = f"val_plots/epoch_{epoch}.png"
-        plotter.screenshot(save_path)
-        plotter.close()
+        plt.savefig(save_path, dpi=150)
+        plt.close(fig)
+
     except Exception as e:
-        print(f"Plotting process failed: {e}")
+        print(f"Matplotlib Plotter failed: {e}")
 
 
 def train():
