@@ -10,6 +10,7 @@ scipy
 scikit-learn
 pyvista
 tqdm
+meshio
 
 # Optional / helper packages often required by PyG (install matching wheels for your torch):
 # torch-scatter
