@@ -11,7 +11,8 @@ from torch.utils.data import random_split
 from transformations import (
     RobustCanonicalAlignment,
     RandomizedDentalBandStretch,
-    AnatomicalDentalStretch
+    AnatomicalDentalStretch,
+    RandomBlobRemoval
 )
 
 
@@ -89,10 +90,12 @@ class TransformSubset(torch.utils.data.Dataset):
 
 
 def get_dental_loaders(data_path, batch_size=2, num_points=8192):
+    # Transforms remain the same
     train_transform = Compose([
         RobustCanonicalAlignment(),
-        RandomizedDentalBandStretch(),
-        AnatomicalDentalStretch(),
+        RandomBlobRemoval(num_blobs=1, radius=0.2, p=0.3),
+        RandomBlobRemoval(num_blobs=1, radius=0.2, p=0.3),
+        RandomBlobRemoval(num_blobs=1, radius=0.2, p=0.3),
         FixedPoints(num_points),
         NormalizeScale()
     ])
@@ -104,24 +107,28 @@ def get_dental_loaders(data_path, batch_size=2, num_points=8192):
     ])
 
     dataset = DentalDataset(root=data_path)
-
-    # Generate indices for the split
     total_count = len(dataset)
-    indices = list(range(total_count))
 
-    # Example: 4 for train, 1 for val (if you have 5 files)
-    train_indices = indices[:4]
-    val_indices = indices[4:5]
+    # Calculate 90/10 split sizes
+    train_size = int(0.9 * total_count)
+    val_size = total_count - train_size
 
-    # Create the subsets
-    train_subset = torch.utils.data.Subset(dataset, train_indices)
-    val_subset = torch.utils.data.Subset(dataset, val_indices)
+    # Split the base dataset randomly
+    # Generator with seed ensures reproducibility if you need to debug
+    train_subset, val_subset = random_split(
+        dataset,
+        [train_size, val_size],
+        generator=torch.Generator().manual_seed(42)
+    )
 
-    # Wrap them with their respective transforms
+    print(
+        f"--- Split Complete: {len(train_subset)} Train | {len(val_subset)} Val ---")
+
+    # Wrap with respective transforms
     train_set = TransformSubset(train_subset, transform=train_transform)
     val_set = TransformSubset(val_subset, transform=val_transform)
 
-    # Use the PyG DataLoader (important for batching graphs correctly)
+    # Loaders
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_set, batch_size=1, shuffle=False)
 

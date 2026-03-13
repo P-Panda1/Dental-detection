@@ -188,3 +188,40 @@ class RandomizedDentalBandStretch(BaseTransform):
         data.incisor_line = incisor_limit
 
         return data
+
+
+class RandomBlobRemoval:
+    def __init__(self, num_blobs=1, radius=0.1, p=0.5):
+        self.num_blobs = num_blobs
+        self.radius = radius
+        self.p = p  # Probability of the transform executing
+
+    def __call__(self, data):
+        # Roll the dice: if random value > p, skip the transform
+        if torch.rand(1).item() > self.p:
+            return data
+
+        pos = data.pos
+        final_mask = torch.ones(
+            pos.size(0), dtype=torch.bool, device=pos.device)
+
+        for _ in range(self.num_blobs):
+            # Pick a random center
+            idx = torch.randint(0, pos.size(0), (1,))
+            center = pos[idx]
+
+            # dist > radius keeps points OUTSIDE, creating the hole
+            dist = torch.norm(pos - center, dim=1)
+            blob_mask = dist > self.radius
+            final_mask &= blob_mask
+
+        # Convert to indices. .subgraph() is key for training because it
+        # correctly prunes the 'face' (triangles) array so no triangles
+        # try to point to deleted vertices.
+        keep_indices = final_mask.nonzero(as_tuple=False).view(-1)
+
+        # Safety: if the blob somehow deletes the whole tooth, return original
+        if keep_indices.numel() < 10:
+            return data
+
+        return data.subgraph(keep_indices)

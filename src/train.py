@@ -102,6 +102,7 @@ def train():
     for epoch in range(1, config.EPOCHS + 1):
         model.train()
         total_train_loss = 0
+
         for batch in tqdm(train_loader, desc=f"Epoch {epoch}"):
             batch = batch.to(config.DEVICE)
             optimizer.zero_grad()
@@ -112,41 +113,45 @@ def train():
             optimizer.step()
             total_train_loss += loss.item()
 
+        # 1. Calculate avg_train_loss here, immediately after the batch loop
+        avg_train_loss = total_train_loss / len(train_loader)
+
         # --- VALIDATION & PLOTTING ---
         if epoch % 5 == 0 or epoch == 1:
             model.eval()
-            with torch.no_grad():
-                val_batch = next(iter(val_loader)).to(config.DEVICE)
-                val_logits = model(val_batch)
-                val_loss = F.cross_entropy(
-                    val_logits, val_batch.y - 1, weight=config.LOSS_WEIGHTS).item()
-                preds = torch.argmax(val_logits, dim=1).cpu().numpy()
+            total_val_loss = 0
 
-                # Move to CPU for plotting
+            with torch.no_grad():
+                for val_batch in val_loader:
+                    val_batch = val_batch.to(config.DEVICE)
+                    val_logits = model(val_batch)
+                    v_loss = F.cross_entropy(
+                        val_logits, val_batch.y - 1, weight=config.LOSS_WEIGHTS)
+                    total_val_loss += v_loss.item()
+
+                avg_val_loss = total_val_loss / len(val_loader)
+                preds = torch.argmax(val_logits, dim=1).cpu().numpy()
                 points_cpu = val_batch.pos.cpu().numpy()
                 gt_y_cpu = val_batch.y.cpu().numpy()
 
-            print(f"Epoch {epoch} | Val Loss: {val_loss:.4f}")
+            # 2. Now avg_train_loss is safely defined and can be printed
+            print(
+                f"Epoch {epoch} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
 
-            # Spawn the plotter in a SEPARATE process
+            # Spawn the plotter for the latest batch
             p = multiprocessing.Process(target=isolated_plotter, args=(
                 points_cpu, gt_y_cpu, preds, epoch))
             p.start()
-            p.join()  # Wait for it to finish so we can display it
+            p.join()
 
-            # Show the image in Jupyter
-            img_path = f"val_plots/epoch_{epoch}.png"
-            if os.path.exists(img_path):
-                display(Image(filename=img_path))
-
-            # Save Checkpoint
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
+            # Save Checkpoint based on AVERAGE validation loss
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
                 save_checkpoint(model, optimizer, epoch,
-                                val_loss, is_best=True)
+                                avg_val_loss, is_best=True)
             else:
                 save_checkpoint(model, optimizer, epoch,
-                                val_loss, is_best=False)
+                                avg_val_loss, is_best=False)
 
 
 if __name__ == "__main__":

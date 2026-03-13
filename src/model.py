@@ -44,50 +44,83 @@ class PointArcFace(nn.Module):
 class DentalMetricDGCNN(nn.Module):
     def __init__(self, k=20, num_classes=3, embed_dim=128):
         super().__init__()
-        # K-Nearest Neighbors for local graph construction
         self.k = k
 
-        # EdgeConv Layers: Learn local 'trench' and 'dome' features
-        # MLP([input_dim * 2, hidden, output])
-        self.conv1 = DynamicEdgeConv(MLP([2 * 3, 64, 64]), k, aggr='max')
-        self.conv2 = DynamicEdgeConv(MLP([2 * 64, 64, 64]), k, aggr='max')
-        self.conv3 = DynamicEdgeConv(MLP([2 * 64, 128, 128]), k, aggr='max')
+        # 1. EdgeConv Layers
+        # We manually define the MLPs inside EdgeConv to include Batch Norm
+        self.conv1 = DynamicEdgeConv(nn.Sequential(
+            nn.Linear(2 * 3, 64),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.Linear(64, 64),
+            nn.BatchNorm1d(64),
+            nn.ReLU()
+        ), k, aggr='max')
 
-        # Global Feature Extractor (The context of the whole jaw)
+        self.conv2 = DynamicEdgeConv(nn.Sequential(
+            nn.Linear(2 * 64, 64),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.Linear(64, 64),
+            nn.BatchNorm1d(64),
+            nn.ReLU()
+        ), k, aggr='max')
+
+        self.conv3 = DynamicEdgeConv(nn.Sequential(
+            nn.Linear(2 * 64, 128),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.BatchNorm1d(128),
+            nn.ReLU()
+        ), k, aggr='max')
+
+        # 2. Global Feature Extractor with Dropout
         self.global_mlp = nn.Sequential(
             nn.Linear(64 + 64 + 128, 512),
+            nn.BatchNorm1d(512),
             nn.ReLU(),
-            nn.Linear(512, 1024)
+            nn.Dropout(p=0.3),  # Prevent memorizing specific jaw patterns
+            nn.Linear(512, 1024),
+            nn.BatchNorm1d(1024),
+            nn.ReLU()
         )
 
-        # Feature Bottleneck (The vector we send to ArcFace)
-        self.embedding_head = MLP([1024 + 64 + 64 + 128, 512, 256, embed_dim])
+        # 3. Embedding Head with heavier Dropout
+        # This is where the model maps features to the sphere
+        self.embedding_head = nn.Sequential(
+            nn.Linear(1024 + 64 + 64 + 128, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(),
+            nn.Dropout(p=0.4),
+            nn.Linear(512, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Linear(256, embed_dim),
+            nn.BatchNorm1d(embed_dim)  # Final norm before ArcFace
+        )
 
-        # The Metric Learning Head
         self.arcface = PointArcFace(
             in_features=embed_dim, out_features=num_classes)
 
     def forward(self, data):
         pos, batch, label = data.pos, data.batch, data.y
 
-        # 1. Multi-scale Local Feature Extraction
+        # Multi-scale Local Feature Extraction
         x1 = self.conv1(pos, batch)
         x2 = self.conv2(x1, batch)
         x3 = self.conv3(x2, batch)
 
-        # 2. Global Context Aggregation
         combined = torch.cat([x1, x2, x3], dim=1)
-        # Use global_max_pool-like behavior per batch
-        # For simplicity in this block, we assume a single graph or use global_feat
+
+        # Global Context
         global_feat = self.global_mlp(combined)
 
-        # 3. Create Point-wise Embeddings
-        # Concatenate local features with global context
+        # Point-wise Embeddings
         x = torch.cat([combined, global_feat], dim=1)
         embeddings = self.embedding_head(x)
 
-        # 4. Final ArcFace Logits
-        # During training, we pass labels to apply the margin
+        # ArcFace Logits
         logits = self.arcface(embeddings, label)
 
         return logits
