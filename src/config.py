@@ -16,7 +16,7 @@ class DentalActiveConfig:
 
     # We prioritize the Border because it has the fewest points
     # Weights: [Gum, Border, Tooth]
-    LOSS_WEIGHTS = torch.tensor([1.0, 8.0, 1.0]).to(DEVICE)
+    LOSS_WEIGHTS = torch.tensor([1.0, 12.0, 3.0]).to(DEVICE)
 
     # --- Model Selection (DGCNN) ---
     NUM_POINTS_GLOBAL = 8192
@@ -37,7 +37,7 @@ class DentalActiveConfig:
     # --- Metric Learning ---
     USE_ARCFACE = True
     ARC_S = 30.0        # Radius of the feature sphere
-    ARC_M = 1.2         # Margin (1.2 radians is ~69 degrees of separation)
+    ARC_M = 0.4       # Margin (in radians) to separate classes on the sphere
     EMBEDDING_DIM = 128  # The size of the vector before the ArcFace head
 
 
