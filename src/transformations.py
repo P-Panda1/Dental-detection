@@ -137,7 +137,7 @@ class AnatomicalDentalStretch(BaseTransform):
 
         # 4. Apply stretch to the 'offset' from the tooth center
         # This makes the tooth wider without shifting the whole jaw
-        stretch_vec = torch.tensor([1.5, 1.0, 1.0])  # 15% wider molars
+        stretch_vec = torch.tensor([2, 2, 1.0])  # 15% wider molars
         offset = data.pos - target_anchors
         stretched_offset = offset * stretch_vec
 
