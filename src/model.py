@@ -149,7 +149,7 @@ class DentalMetricDGCNN(nn.Module):
         self.k = k
 
         self.conv1 = DynamicEdgeConv(nn.Sequential(
-            nn.Linear(2 * 6, 64),
+            nn.Linear(2 * 3, 64),
             nn.LayerNorm(64),
             nn.ReLU(),
             nn.Linear(64, 64),
