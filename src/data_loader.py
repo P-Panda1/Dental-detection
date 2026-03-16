@@ -4,7 +4,6 @@ import pyvista as pv
 from torch_geometric.data import Data, Dataset
 from torch_geometric.loader import DataLoader
 from torch_geometric.transforms import Compose, NormalizeScale, FixedPoints
-from torch_cluster import knn
 from torch.utils.data import random_split
 
 # Import from our other file
@@ -14,6 +13,51 @@ from transformations import (
     AnatomicalDentalStretch,
     RandomBlobRemoval
 )
+
+
+def custom_batched_knn_graph(pos, k, batch=None):
+    """
+    A pure PyTorch implementation of batched KNN graph generation.
+    Bypasses the need for torch_cluster and avoids OOM errors by processing per-batch.
+    """
+    # 1. Handle the case where batch is None (single graph)
+    if batch is None:
+        batch = torch.zeros(pos.size(0), dtype=torch.long, device=pos.device)
+
+    edge_indices = []
+
+    # Process each graph in the batch separately
+    for b in batch.unique():
+        mask = batch == b
+        pos_b = pos[mask]
+
+        # 2. Skip if a batch index is somehow empty
+        if pos_b.size(0) == 0:
+            continue
+
+        # Calculate pairwise distances for just this point cloud
+        dist = torch.cdist(pos_b, pos_b)
+
+        # Get top k nearest neighbors
+        actual_k = min(k + 1, pos_b.size(0))
+        _, col_b = dist.topk(actual_k, dim=1, largest=False, sorted=False)
+
+        # Create row indices
+        row_b = torch.arange(pos_b.size(
+            0), device=pos.device).view(-1, 1).expand(-1, actual_k)
+
+        # Map the local batch indices back to the global indices
+        orig_indices = torch.where(mask)[0]
+        col = orig_indices[col_b.reshape(-1)]
+        row = orig_indices[row_b.reshape(-1)]
+
+        edge_indices.append(torch.stack([col, row], dim=0))
+
+    # 3. Final safeguard in case no edges were generated at all
+    if len(edge_indices) == 0:
+        return torch.empty((2, 0), dtype=torch.long, device=pos.device)
+
+    return torch.cat(edge_indices, dim=1)
 
 
 class DentalDataset(Dataset):
@@ -58,7 +102,8 @@ class DentalDataset(Dataset):
         if unknown_mask.any() and known_mask.any():
             # Find the nearest 'known' point for every 'unknown' point
             # k=1 because we want the single best neighbor match
-            assign_idx = knn(pos[known_mask], pos[unknown_mask], k=1)
+            assign_idx = custom_batched_knn_graph(
+                pos[known_mask], pos[unknown_mask], k=1)
 
             # Map the neighbor's label to the unknown point
             # assign_idx[0] is index of unknown point, [1] is index of known neighbor
