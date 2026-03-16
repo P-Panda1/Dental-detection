@@ -118,6 +118,14 @@ def train():
 
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=config.LR, weight_decay=config.WEIGHT_DECAY)
+
+    # T_max is the number of steps to reach the minimum LR (usually set to total epochs)
+    # eta_min is the lowest the learning rate will go (e.g., 1e-6)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=config.EPOCHS,
+        eta_min=1e-6
+    )
     best_val_loss = float('inf')
 
     for epoch in range(1, config.EPOCHS + 1):
@@ -137,6 +145,10 @@ def train():
         # 1. Calculate avg_train_loss here, immediately after the batch loop
         avg_train_loss = total_train_loss / len(train_loader)
 
+        # --- STEP THE SCHEDULER HERE ---
+        scheduler.step()
+        current_lr = scheduler.get_last_lr()[0]
+        print(f"Epoch {epoch+1} complete. Current LR: {current_lr:.6f}")
         # --- VALIDATION & PLOTTING ---
         if epoch % 5 == 0 or epoch == 1:
             model.eval()
