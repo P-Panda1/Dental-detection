@@ -80,7 +80,7 @@ def bulk_label_data(input_dir="../data/unlabeled", output_dir="../data/labeled")
             low_res_data.batch = torch.zeros(
                 low_res_data.pos.shape[0], dtype=torch.long
             ).to(device)
-
+            print(low_res_data.x, low_res_data.pos)
             # 5. Inference — model.eval() means ArcFace skips margin
             with torch.no_grad():
                 logits = model(low_res_data)
