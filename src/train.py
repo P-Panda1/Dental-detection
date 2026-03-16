@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 # Import custom modules
 from config import config
-from model import DentalMetricDGCNN
+from model import DentalMetricDGCNN, PointNet2Backbone
 from data_loader import get_dental_loaders
 
 
@@ -82,11 +82,18 @@ def train():
     train_loader, val_loader, _ = get_dental_loaders(
         "../data", batch_size=config.BATCH_SIZE)
 
-    model = DentalMetricDGCNN(
-        k=config.K_NEIGHBORS,
+    # model = DentalMetricDGCNN(
+    #     k=config.K_NEIGHBORS,
+    #     num_classes=config.NUM_CLASSES,
+    #     embed_dim=config.GLOBAL_EMBED_DIM // 8
+    # ).to(config.DEVICE)
+
+    model = PointNet2Backbone(
         num_classes=config.NUM_CLASSES,
         embed_dim=config.GLOBAL_EMBED_DIM // 8
     ).to(config.DEVICE)
+
+    model.compile()  # Optional: Use PyTorch 2.0 compilation for potential speedup
 
     # --- LOAD BEST MODEL IF IT EXISTS ---
     best_path = os.path.join(config.CHECKPOINT_DIR, "best_model.pth")
