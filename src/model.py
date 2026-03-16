@@ -47,17 +47,18 @@ class PointArcFace(nn.Module):
 
 class LiteGraphUNet(GraphUNet):
     def forward(self, x, edge_index, batch, edge_weight=None):
-        """"Forward pass without the expensive adjacency augmentation""""
+        """"Forward pass without the expensive adjacency augmentation"""
         # We manually perform the forward pass to skip A @ A
         x_all = [x]
         perms = []
 
         for i in range(1, self.depth + 1):
             # --- THIS IS THE FIX ---
-            # Instead of augmenting (squaring) the matrix, 
+            # Instead of augmenting (squaring) the matrix,
             # we just ensure self-loops exist for connectivity stability.
-            edge_index, edge_weight = add_self_loops(edge_index, edge_weight, num_nodes=x.size(0))
-            
+            edge_index, edge_weight = add_self_loops(
+                edge_index, edge_weight, num_nodes=x.size(0))
+
             # Standard Pooling
             x, edge_index, edge_weight, batch, perm, _ = self.pools[i - 1](
                 x, edge_index, edge_weight, batch)
@@ -72,12 +73,13 @@ class LiteGraphUNet(GraphUNet):
             j = self.depth - 1 - i
             res = x_all[j]
             perm = perms[j]
-            
+
             x = self.unpools[i](x, perm)
             x = x + res if self.sum_res else torch.cat([x, res], dim=-1)
             x = self.up_convs[i](x, edge_index, edge_weight)
 
         return x
+
 
 class DentalGraphUNet(nn.Module):
     def __init__(self, num_classes=3, embed_dim=128, k=20):  # Add k here
