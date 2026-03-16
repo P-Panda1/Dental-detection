@@ -95,6 +95,36 @@ def isolated_plotter(points, gt_y, preds, epoch):
         print(f"Matplotlib Plotter failed: {e}")
 
 
+def balanced_mean_loss(logits, labels, num_classes=3):
+    """
+    Computes cross-entropy per class independently, then takes
+    the unweighted mean across classes. Each class contributes
+    equally regardless of how many points it has.
+
+    Args:
+        logits: [N, num_classes]
+        labels: [N]  — 0-indexed
+    Returns:
+        scalar loss
+    """
+    class_losses = []
+
+    for c in range(num_classes):
+        mask = labels == c
+
+        # Skip if this class has no points in the batch
+        if mask.sum() == 0:
+            continue
+
+        class_logits = logits[mask]        # [n_c, num_classes]
+        class_labels = labels[mask]        # [n_c]
+
+        loss_c = F.cross_entropy(class_logits, class_labels)
+        class_losses.append(loss_c)
+
+    return torch.stack(class_losses).mean()
+
+
 def train():
     clear_gpu()
     train_loader, val_loader, _ = get_dental_loaders(
@@ -141,7 +171,9 @@ def train():
             batch = batch.to(config.DEVICE)
             optimizer.zero_grad()
             logits = model(batch)
-            loss = F.cross_entropy(logits, batch.y - 1)
+            # loss = F.cross_entropy(logits, batch.y - 1)
+            loss = balanced_mean_loss(
+                logits, batch.y - 1, num_classes=config.NUM_CLASSES)
             loss.backward()
             optimizer.step()
             total_train_loss += loss.item()

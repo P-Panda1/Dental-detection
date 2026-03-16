@@ -27,7 +27,7 @@ class DentalActiveConfig:
     BATCH_SIZE = 2
     LR = 1e-4
     WEIGHT_DECAY = 1e-4
-    EPOCHS = 100
+    EPOCHS = 10000
 
     # --- Active Learning ---
     CONFIDENCE_THRESHOLD = 0.90
