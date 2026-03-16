@@ -2,6 +2,7 @@ from torch_geometric.nn import MLP, fps, radius
 from torch_geometric.nn.conv import PointConv
 from torch_geometric.nn.unpool import knn_interpolate
 from torch_geometric.nn import DynamicEdgeConv, MLP
+from torch_cluster import knn
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -82,46 +83,78 @@ class DentalResPointNet(nn.Module):
             in_features=embed_dim, out_features=num_classes)
 
     def forward(self, data):
-        x0, pos0, batch0 = data.pos, data.pos, data.batch
+        # Ensure contiguous memory layout for stable CUDA indexing
+        pos0 = data.pos.contiguous()
+        batch0 = data.batch.contiguous()
+        x0 = pos0
+        num_nodes = pos0.size(0)
 
-        # --- LAYER 1 ---
+        # --- LAYER 1 (8192 -> 2048) ---
         idx1 = fps(pos0, batch0, ratio=0.25)
-        # Ensure row/col are generated correctly for the sampled subset
+
+        # Radius search for grouping
         row, col = radius(pos0, pos0[idx1], r=0.1, batch_x=batch0,
                           batch_y=batch0[idx1], max_num_neighbors=32)
-        edge_index1 = torch.stack([col, row], dim=0)
+
+        # Check if any edges were found; if not, fallback to k-NN
+        if row.numel() > 0:
+            edge_index1 = torch.stack([col, row], dim=0)
+        else:
+            edge_index1 = knn(pos0, pos0[idx1], k=8,
+                              batch_x=batch0, batch_y=batch0[idx1])
+
         x1 = self.enc1_a(x0, pos0, edge_index1)[idx1]
-        x1 = self.enc1_b(x1, pos0[idx1], edge_index1[:, ::4])
+
+        # Safety slice for the second residual block
+        res_edges1 = edge_index1[:, :edge_index1.size(
+            1) // 4] if edge_index1.size(1) > 4 else edge_index1
+        x1 = self.enc1_b(x1, pos0[idx1], res_edges1)
+
         pos1, batch1 = pos0[idx1], batch0[idx1]
 
-        # --- LAYER 2 ---
+        # --- LAYER 2 (2048 -> 512) ---
         idx2 = fps(pos1, batch1, ratio=0.25)
         row, col = radius(pos1, pos1[idx2], r=0.2, batch_x=batch1,
                           batch_y=batch1[idx2], max_num_neighbors=32)
-        edge_index2 = torch.stack([col, row], dim=0)
+
+        if row.numel() > 0:
+            edge_index2 = torch.stack([col, row], dim=0)
+        else:
+            edge_index2 = knn(pos1, pos1[idx2], k=8,
+                              batch_x=batch1, batch_y=batch1[idx2])
+
         x2 = self.enc2_a(x1, pos1, edge_index2)[idx2]
-        x2 = self.enc2_b(x2, pos1[idx2], edge_index2[:, ::4])
+        res_edges2 = edge_index2[:, :edge_index2.size(
+            1) // 4] if edge_index2.size(1) > 4 else edge_index2
+        x2 = self.enc2_b(x2, pos1[idx2], res_edges2)
         pos2, batch2 = pos1[idx2], batch1[idx2]
 
-        # --- LAYER 3 ---
+        # --- LAYER 3 (512 -> 128) ---
         idx3 = fps(pos2, batch2, ratio=0.25)
         row, col = radius(pos2, pos2[idx3], r=0.4, batch_x=batch2,
                           batch_y=batch2[idx3], max_num_neighbors=32)
-        edge_index3 = torch.stack([col, row], dim=0)
+
+        if row.numel() > 0:
+            edge_index3 = torch.stack([col, row], dim=0)
+        else:
+            edge_index3 = knn(pos2, pos2[idx3], k=8,
+                              batch_x=batch2, batch_y=batch2[idx3])
+
         x3 = self.enc3(x2, pos2, edge_index3)[idx3]
         pos3, batch3 = pos2[idx3], batch2[idx3]
 
-        # --- DECODER ---
-        up3 = knn_interpolate(
-            x3, pos3, pos2, batch_x=batch3, batch_y=batch2, k=3)
+        # --- DECODER (Upsampling) ---
+        # knn_interpolate is naturally robust as long as k <= points in previous layer
+        up3 = knn_interpolate(x3, pos3, pos2, batch_x=batch3,
+                              batch_y=batch2, k=min(3, x3.size(0)))
         x_up2 = self.fp3(torch.cat([up3, x2], dim=-1))
 
-        up2 = knn_interpolate(
-            x_up2, pos2, pos1, batch_x=batch2, batch_y=batch1, k=3)
+        up2 = knn_interpolate(x_up2, pos2, pos1, batch_x=batch2,
+                              batch_y=batch1, k=min(3, x_up2.size(0)))
         x_up1 = self.fp2(torch.cat([up2, x1], dim=-1))
 
-        up1 = knn_interpolate(
-            x_up1, pos1, pos0, batch_x=batch1, batch_y=batch0, k=3)
+        up1 = knn_interpolate(x_up1, pos1, pos0, batch_x=batch1,
+                              batch_y=batch0, k=min(3, x_up1.size(0)))
         embeddings = self.fp1(torch.cat([up1, pos0], dim=-1))
 
         return self.arcface(embeddings, data.y)
