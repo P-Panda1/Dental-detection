@@ -20,35 +20,29 @@ class ComputeNormalsFromPos:
         self.k = k
 
     def __call__(self, data):
-        pos = data.pos                                    # [N, 3]
+        pos = data.pos
         N = pos.shape[0]
         batch = torch.zeros(N, dtype=torch.long)
 
-        edge_index = knn(pos, pos, k=self.k,
-                         batch_x=batch, batch_y=batch)     # [2, N*k]
+        edge_index = knn(pos, pos, k=self.k, batch_x=batch, batch_y=batch)
 
-        # dst=center, src=neighbor
         src, dst = edge_index[0], edge_index[1]
-        # [N*k, 3] relative vectors
         neighbors = pos[src] - pos[dst]
 
-        # Build covariance matrices for all points at once
-        # neighbors: [N*k, 3] → we need [N, 3, 3]
-        # scatter outer products: cov[i] += neighbors[e].T @ neighbors[e]
         cov = torch.zeros(N, 3, 3)
         cov.scatter_add_(
             0,
             dst.view(-1, 1, 1).expand(-1, 3, 3),
-            neighbors.unsqueeze(2) * neighbors.unsqueeze(1)  # [N*k, 3, 3]
+            neighbors.unsqueeze(2) * neighbors.unsqueeze(1)
         )
 
-        # Batch eigendecomposition — much faster than per-point loop
-        _, eigvecs = torch.linalg.eigh(cov)                # [N, 3, 3]
-        # smallest eigenvec [N, 3]
+        _, eigvecs = torch.linalg.eigh(cov)
         normals = eigvecs[:, :, 0]
-
         norms = normals.norm(dim=1, keepdim=True).clamp(min=1e-8)
-        data.x = normals / norms                        # [N, 3]
+        normals = normals / norms
+
+        # pos is already normalized by NormalizeScale — safe to include
+        data.x = torch.cat([pos, normals], dim=-1)   # [N, 6]
         return data
 
 
