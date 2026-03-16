@@ -2,6 +2,7 @@ from torch_geometric.utils import add_self_loops
 from torch_geometric.nn import GATv2Conv, MLP, global_max_pool
 from torch_geometric.nn import DynamicEdgeConv
 import torch
+from torch_cluster import knn_graph
 import torch.nn as nn
 import torch.nn.functional as F
 import math
@@ -74,7 +75,7 @@ class DentalPointTransformer(nn.Module):
         self.k = k
 
         # Initial projection from XYZ to Hidden
-        self.lin0 = nn.Linear(3, 64)
+        self.lin0 = nn.Linear(6, 64)
 
         # Deep Transformer Layers (Residual)
         self.layer1 = TransformerBlock(64, 64)
@@ -98,7 +99,6 @@ class DentalPointTransformer(nn.Module):
 
         # 1. Build a stable KNN Graph (one time only)
         # Using a fixed K is much safer than Radius search
-        from torch_cluster import knn_graph
         edge_index = knn_graph(pos, k=self.k, batch=batch)
 
         # 2. Extract Features
@@ -127,7 +127,7 @@ class DentalMetricDGCNN(nn.Module):
         # 1. EdgeConv Layers
         # We manually define the MLPs inside EdgeConv to include Batch Norm
         self.conv1 = DynamicEdgeConv(nn.Sequential(
-            nn.Linear(2 * 3, 64),
+            nn.Linear(2 * 6, 64),
             nn.BatchNorm1d(64),
             nn.ReLU(),
             nn.Linear(64, 64),
@@ -182,10 +182,10 @@ class DentalMetricDGCNN(nn.Module):
             in_features=embed_dim, out_features=num_classes)
 
     def forward(self, data):
-        pos, batch, label = data.pos, data.batch, data.y
+        x, batch, label = data.x, data.batch, data.y
 
         # Multi-scale Local Feature Extraction
-        x1 = self.conv1(pos, batch)
+        x1 = self.conv1(x, batch)
         x2 = self.conv2(x1, batch)
         x3 = self.conv3(x2, batch)
 

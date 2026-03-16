@@ -34,6 +34,13 @@ class DentalDataset(Dataset):
         path = os.path.join(self.root, self.files[idx])
         mesh = pv.read(path)
         pos = torch.from_numpy(mesh.points).float()
+
+        # Calculate normals (crucial for finding sharp dental edges)
+        # point_normals=True calculates orientation for every point
+        mesh = mesh.compute_normals(
+            cell_normals=False, point_normals=True, flip_normals=True)
+        normals = torch.from_numpy(mesh['Normals']).float()
+
         colors = mesh.point_data.get('colors') or mesh.point_data.get(
             'RGB') or mesh.point_data.get('RGBA')
 
@@ -68,7 +75,9 @@ class DentalDataset(Dataset):
             # Fallback if the file has NO valid colors
             y = torch.ones(len(pos), dtype=torch.long)
 
-        return Data(pos=pos, y=y)
+        features = torch.cat([pos, normals], dim=-1)
+
+        return Data(pos=pos, x=features, y=y)
 
 # Wrapper to apply different transforms to subsets
 
