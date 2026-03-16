@@ -16,7 +16,7 @@ class DentalActiveConfig:
 
     # We prioritize the Border because it has the fewest points
     # Weights: [Gum, Border, Tooth]
-    LOSS_WEIGHTS = torch.tensor([1.0, 6.0, 2.0]).to(DEVICE)
+    LOSS_WEIGHTS = torch.tensor([3.0, 10.0, 5.0]).to(DEVICE)
 
     # --- Model Selection (DGCNN) ---
     NUM_POINTS_GLOBAL = 8192
