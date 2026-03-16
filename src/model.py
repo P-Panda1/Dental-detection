@@ -1,7 +1,6 @@
 from torch_geometric.nn import MLP, fps, radius
 from torch_geometric.nn.conv import PointConv
 from torch_geometric.nn.unpool import knn_interpolate
-from torch_geometric.nn import PointConv, MLP, fps, radius
 from torch_geometric.nn import DynamicEdgeConv, MLP
 import torch
 import torch.nn as nn
