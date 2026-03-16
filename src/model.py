@@ -149,51 +149,51 @@ class DentalMetricDGCNN(nn.Module):
 
         self.conv1 = DynamicEdgeConv(nn.Sequential(
             nn.Linear(2 * 6, 64),
-            nn.BatchNorm1d(64),
+            nn.LayerNorm(64),
             nn.ReLU(),
             nn.Linear(64, 64),
-            nn.BatchNorm1d(64),
+            nn.LayerNorm(64),
             nn.ReLU()
         ), k, aggr='max')
 
         self.conv2 = DynamicEdgeConv(nn.Sequential(
             nn.Linear(2 * 64, 64),
-            nn.BatchNorm1d(64),
+            nn.LayerNorm(64),
             nn.ReLU(),
             nn.Linear(64, 64),
-            nn.BatchNorm1d(64),
+            nn.LayerNorm(64),
             nn.ReLU()
         ), k, aggr='max')
 
         self.conv3 = DynamicEdgeConv(nn.Sequential(
             nn.Linear(2 * 64, 128),
-            nn.BatchNorm1d(128),
+            nn.LayerNorm(128),
             nn.ReLU(),
             nn.Linear(128, 128),
-            nn.BatchNorm1d(128),
+            nn.LayerNorm(128),
             nn.ReLU()
         ), k, aggr='max')
 
         self.global_mlp = nn.Sequential(
             nn.Linear(256, 512),
-            nn.BatchNorm1d(512),
+            nn.LayerNorm(512),
             nn.ReLU(),
             nn.Dropout(p=0.3),
             nn.Linear(512, 1024),
-            nn.BatchNorm1d(1024),
+            nn.LayerNorm(1024),
             nn.ReLU()
         )
 
         self.embedding_head = nn.Sequential(
             nn.Linear(256 + 1024, 512),
-            nn.BatchNorm1d(512),
+            nn.LayerNorm(512),
             nn.ReLU(),
             nn.Dropout(p=0.4),
             nn.Linear(512, 256),
-            nn.BatchNorm1d(256),
+            nn.LayerNorm(256),
             nn.ReLU(),
             nn.Linear(256, embed_dim),
-            nn.BatchNorm1d(embed_dim)
+            nn.LayerNorm(embed_dim)
         )
 
         self.arcface = PointArcFace(
