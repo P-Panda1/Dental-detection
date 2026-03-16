@@ -125,6 +125,29 @@ def balanced_mean_loss(logits, labels, num_classes=3):
     return torch.stack(class_losses).mean()
 
 
+def dice_loss(logits, labels, num_classes=3, smooth=1e-6):
+    """
+    Differentiable approximation of per-class IoU.
+    Works on soft probabilities so gradients flow.
+    """
+    probs = torch.softmax(logits, dim=1)           # [N, num_classes]
+    one_hot = torch.zeros_like(probs)
+    one_hot.scatter_(1, labels.view(-1, 1), 1.0)   # [N, num_classes]
+
+    dims = (0,)  # sum over points
+    intersection = (probs * one_hot).sum(dims)
+    cardinality = (probs + one_hot).sum(dims)
+
+    dice_per_class = (2.0 * intersection + smooth) / (cardinality + smooth)
+    return 1.0 - dice_per_class.mean()
+
+
+def combined_loss(logits, labels, num_classes=3, dice_weight=0.5):
+    ce = balanced_mean_loss(logits, labels, num_classes)
+    dice = dice_loss(logits, labels, num_classes)
+    return ce + dice_weight * dice
+
+
 def train():
     clear_gpu()
     train_loader, val_loader, _ = get_dental_loaders(
@@ -172,7 +195,7 @@ def train():
             optimizer.zero_grad()
             logits = model(batch)
             # loss = F.cross_entropy(logits, batch.y - 1)
-            loss = balanced_mean_loss(
+            loss = combined_loss(
                 logits, batch.y - 1, num_classes=config.NUM_CLASSES)
             loss.backward()
             optimizer.step()
