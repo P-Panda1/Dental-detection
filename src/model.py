@@ -102,7 +102,7 @@ class DentalPointTransformer(nn.Module):
         edge_index = knn_graph(pos, k=self.k, batch=batch)
 
         # 2. Extract Features
-        x = self.lin0(pos)
+        x = self.lin0(data.x)  # From 6 (pos+normals) to 64
 
         x1 = self.layer1(x, edge_index)
         x2 = self.layer2(x1, edge_index)
