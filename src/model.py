@@ -1,5 +1,4 @@
 from torch_geometric.utils import add_self_loops, remove_self_loops
-from torch_cluster import knn_graph
 from torch_geometric.nn.models import GraphUNet
 from torch_geometric.nn import global_max_pool
 from torch_geometric.nn import DynamicEdgeConv, MLP
@@ -43,6 +42,40 @@ class PointArcFace(nn.Module):
         output = (one_hot * target_logit) + ((1.0 - one_hot) * cosine)
 
         return output * self.s
+
+
+def custom_batched_knn_graph(pos, k, batch):
+    """
+    A pure PyTorch implementation of batched KNN graph generation.
+    Bypasses the need for torch_cluster and avoids OOM errors by processing per-batch.
+    """
+    edge_indices = []
+
+    # Process each graph in the batch separately
+    for b in batch.unique():
+        mask = batch == b
+        pos_b = pos[mask]
+
+        # Calculate pairwise distances for just this point cloud
+        dist = torch.cdist(pos_b, pos_b)
+
+        # Get top k nearest neighbors
+        # We use k+1 because a point is its own nearest neighbor (distance 0)
+        actual_k = min(k + 1, pos_b.size(0))
+        _, col_b = dist.topk(actual_k, dim=1, largest=False, sorted=False)
+
+        # Create row indices
+        row_b = torch.arange(pos_b.size(
+            0), device=pos.device).view(-1, 1).expand(-1, actual_k)
+
+        # Map the local batch indices back to the global indices
+        orig_indices = torch.where(mask)[0]
+        col = orig_indices[col_b.reshape(-1)]
+        row = orig_indices[row_b.reshape(-1)]
+
+        edge_indices.append(torch.stack([col, row], dim=0))
+
+    return torch.cat(edge_indices, dim=1)
 
 
 class LiteGraphUNet(GraphUNet):
@@ -91,7 +124,7 @@ class DentalGraphUNet(nn.Module):
         pos, batch, label = data.pos, data.batch, data.y
 
         # Use self.k instead of config.K_NEIGHBORS
-        edge_index = knn_graph(pos, k=self.k, batch=batch)
+        edge_index = custom_batched_knn_graph(pos, k=self.k, batch=batch)
 
         embeddings = self.backbone(pos, edge_index, batch)
         logits = self.arcface(embeddings, label)
