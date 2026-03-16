@@ -1,8 +1,8 @@
+from torch_cluster import knn as knn_cluster
 from torch_geometric.nn import MLP, fps, radius
 from torch_geometric.nn.conv import PointConv
 from torch_geometric.nn.unpool import knn_interpolate
 from torch_geometric.nn import DynamicEdgeConv, MLP
-from torch_cluster import knn
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -67,14 +67,12 @@ class ResPointBlock(nn.Module):
 class DentalResPointNet(nn.Module):
     def __init__(self, num_classes=3, embed_dim=128):
         super().__init__()
-        # Encoder
-        self.enc1_a = ResPointBlock(3, 64)
+        self.enc1 = ResPointBlock(3, 64)
         self.enc1_b = ResPointBlock(64, 64)
-        self.enc2_a = ResPointBlock(64, 128)
+        self.enc2 = ResPointBlock(64, 128)
         self.enc2_b = ResPointBlock(128, 128)
         self.enc3 = ResPointBlock(128, 256)
 
-        # Decoder
         self.fp3 = MLP([256 + 128, 256, 128])
         self.fp2 = MLP([128 + 64, 128, 128])
         self.fp1 = MLP([128 + 3, 128, embed_dim])
@@ -83,68 +81,55 @@ class DentalResPointNet(nn.Module):
             in_features=embed_dim, out_features=num_classes)
 
     def forward(self, data):
-        # Ensure contiguous memory layout for stable CUDA indexing
+        # 1. Contiguous & Safe Initial Data
         pos0 = data.pos.contiguous()
         batch0 = data.batch.contiguous()
-        x0 = pos0
-        num_nodes = pos0.size(0)
+        x0 = pos0  # Coordinates as initial features
 
-        # --- LAYER 1 (8192 -> 2048) ---
-        idx1 = fps(pos0, batch0, ratio=0.25)
+        # --- LAYER 1 (CPU Sampling for Blackwell Stability) ---
+        p0_c, b0_c = pos0.cpu(), batch0.cpu()
+        idx1 = fps(p0_c, b0_c, ratio=0.25).to(pos0.device)
 
-        # Radius search for grouping
-        row, col = radius(pos0, pos0[idx1], r=0.1, batch_x=batch0,
-                          batch_y=batch0[idx1], max_num_neighbors=32)
+        row, col = radius(p0_c, p0_c[idx1.cpu()], r=0.1, batch_x=b0_c,
+                          batch_y=b0_c[idx1.cpu()], max_num_neighbors=32)
 
-        # Check if any edges were found; if not, fallback to k-NN
         if row.numel() > 0:
-            edge_index1 = torch.stack([col, row], dim=0)
+            edge_index1 = torch.stack([col, row], dim=0).to(pos0.device)
         else:
-            edge_index1 = knn(pos0, pos0[idx1], k=8,
-                              batch_x=batch0, batch_y=batch0[idx1])
+            edge_index1 = knn_cluster(
+                pos0, pos0[idx1], k=8, batch_x=batch0, batch_y=batch0[idx1])
 
-        x1 = self.enc1_a(x0, pos0, edge_index1)[idx1]
-
-        # Safety slice for the second residual block
-        res_edges1 = edge_index1[:, :edge_index1.size(
-            1) // 4] if edge_index1.size(1) > 4 else edge_index1
-        x1 = self.enc1_b(x1, pos0[idx1], res_edges1)
-
+        x1 = self.enc1(x0, pos0, edge_index1)[idx1]
         pos1, batch1 = pos0[idx1], batch0[idx1]
+        x1 = self.enc1_b(x1, pos1, edge_index1[:, ::4] if edge_index1.size(
+            1) > 4 else edge_index1)
 
-        # --- LAYER 2 (2048 -> 512) ---
-        idx2 = fps(pos1, batch1, ratio=0.25)
-        row, col = radius(pos1, pos1[idx2], r=0.2, batch_x=batch1,
-                          batch_y=batch1[idx2], max_num_neighbors=32)
+        # --- LAYER 2 ---
+        p1_c, b1_c = pos1.cpu(), batch1.cpu()
+        idx2 = fps(p1_c, b1_c, ratio=0.25).to(pos1.device)
+        row, col = radius(p1_c, p1_c[idx2.cpu()], r=0.2, batch_x=b1_c,
+                          batch_y=b1_c[idx2.cpu()], max_num_neighbors=32)
 
         if row.numel() > 0:
-            edge_index2 = torch.stack([col, row], dim=0)
+            edge_index2 = torch.stack([col, row], dim=0).to(pos1.device)
         else:
-            edge_index2 = knn(pos1, pos1[idx2], k=8,
-                              batch_x=batch1, batch_y=batch1[idx2])
+            edge_index2 = knn_cluster(
+                pos1, pos1[idx2], k=8, batch_x=batch1, batch_y=batch1[idx2])
 
-        x2 = self.enc2_a(x1, pos1, edge_index2)[idx2]
-        res_edges2 = edge_index2[:, :edge_index2.size(
-            1) // 4] if edge_index2.size(1) > 4 else edge_index2
-        x2 = self.enc2_b(x2, pos1[idx2], res_edges2)
+        x2 = self.enc2(x1, pos1, edge_index2)[idx2]
         pos2, batch2 = pos1[idx2], batch1[idx2]
+        x2 = self.enc2_b(x2, pos2, edge_index2[:, ::4] if edge_index2.size(
+            1) > 4 else edge_index2)
 
-        # --- LAYER 3 (512 -> 128) ---
-        idx3 = fps(pos2, batch2, ratio=0.25)
-        row, col = radius(pos2, pos2[idx3], r=0.4, batch_x=batch2,
-                          batch_y=batch2[idx3], max_num_neighbors=32)
-
-        if row.numel() > 0:
-            edge_index3 = torch.stack([col, row], dim=0)
-        else:
-            edge_index3 = knn(pos2, pos2[idx3], k=8,
-                              batch_x=batch2, batch_y=batch2[idx3])
-
+        # --- LAYER 3 ---
+        p2_c, b2_c = pos2.cpu(), batch2.cpu()
+        idx3 = fps(p2_c, b2_c, ratio=0.25).to(pos2.device)
+        edge_index3 = knn_cluster(
+            pos2, pos2[idx3], k=16, batch_x=batch2, batch_y=batch2[idx3])
         x3 = self.enc3(x2, pos2, edge_index3)[idx3]
         pos3, batch3 = pos2[idx3], batch2[idx3]
 
-        # --- DECODER (Upsampling) ---
-        # knn_interpolate is naturally robust as long as k <= points in previous layer
+        # --- DECODER ---
         up3 = knn_interpolate(x3, pos3, pos2, batch_x=batch3,
                               batch_y=batch2, k=min(3, x3.size(0)))
         x_up2 = self.fp3(torch.cat([up3, x2], dim=-1))
