@@ -96,7 +96,9 @@ def get_dental_loaders(data_path, batch_size=2, num_points=8192):
         AnatomicalDentalStretch(),
         RandomBlobRemoval(num_blobs=5, radius=0.05, p=0.8),
         RandomBlobRemoval(num_blobs=1, radius=0.1, p=0.8),
-        RandomBlobRemoval(num_blobs=1, radius=0.3, p=0.8)
+        RandomBlobRemoval(num_blobs=1, radius=0.3, p=0.8),
+        FixedPoints(num_points),
+        NormalizeScale()
     ])
 
     val_transform = Compose([
