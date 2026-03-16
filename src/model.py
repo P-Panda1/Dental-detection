@@ -1,3 +1,4 @@
+from torch_geometric.utils import add_self_loops, remove_self_loops
 from torch_cluster import knn_graph
 from torch_geometric.nn.models import GraphUNet
 from torch_geometric.nn import global_max_pool
@@ -46,12 +47,46 @@ class PointArcFace(nn.Module):
         return output * self.s
 
 
+class LiteGraphUNet(GraphUNet):
+    def forward(self, x, edge_index, batch, edge_weight=None):
+        """"Forward pass without the expensive adjacency augmentation""""
+        # We manually perform the forward pass to skip A @ A
+        x_all = [x]
+        perms = []
+
+        for i in range(1, self.depth + 1):
+            # --- THIS IS THE FIX ---
+            # Instead of augmenting (squaring) the matrix, 
+            # we just ensure self-loops exist for connectivity stability.
+            edge_index, edge_weight = add_self_loops(edge_index, edge_weight, num_nodes=x.size(0))
+            
+            # Standard Pooling
+            x, edge_index, edge_weight, batch, perm, _ = self.pools[i - 1](
+                x, edge_index, edge_weight, batch)
+
+            # Standard Convolution
+            x = self.down_convs[i - 1](x, edge_index, edge_weight)
+            x_all.append(x)
+            perms.append(perm)
+
+        # Decoder path (Upsampling)
+        for i in range(self.depth):
+            j = self.depth - 1 - i
+            res = x_all[j]
+            perm = perms[j]
+            
+            x = self.unpools[i](x, perm)
+            x = x + res if self.sum_res else torch.cat([x, res], dim=-1)
+            x = self.up_convs[i](x, edge_index, edge_weight)
+
+        return x
+
 class DentalGraphUNet(nn.Module):
     def __init__(self, num_classes=3, embed_dim=128, k=20):  # Add k here
         super().__init__()
         self.k = k  # Store it!
 
-        self.backbone = GraphUNet(
+        self.backbone = LiteGraphUNet(
             in_channels=3,
             hidden_channels=64,
             out_channels=embed_dim,
