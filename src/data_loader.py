@@ -94,12 +94,9 @@ def get_dental_loaders(data_path, batch_size=2, num_points=8192):
     train_transform = Compose([
         RobustCanonicalAlignment(),
         AnatomicalDentalStretch(),
-        RandomBlobRemoval(num_blobs=1, radius=0.05, p=0.9),
-        RandomBlobRemoval(num_blobs=5, radius=0.05, p=0.4),
-        RandomBlobRemoval(num_blobs=3, radius=0.05, p=0.8),
+        RandomBlobRemoval(num_blobs=5, radius=0.05, p=0.8),
         RandomBlobRemoval(num_blobs=1, radius=0.1, p=0.8),
-        RandomBlobRemoval(num_blobs=1, radius=0.3, p=0.8),
-        RandomBlobRemoval(num_blobs=1, radius=0.5, p=0.3)
+        RandomBlobRemoval(num_blobs=1, radius=0.3, p=0.8)
     ])
 
     val_transform = Compose([
