@@ -44,25 +44,6 @@ class PointArcFace(nn.Module):
         return output * self.s
 
 
-def safe_fps(pos, batch, ratio):
-    # Move to CPU for the kernel-sensitive part
-    pos_cpu = pos.cpu()
-    batch_cpu = batch.cpu()
-    # Run sampling
-    idx = fps(pos_cpu, batch_cpu, ratio=ratio)
-    # Move result back to GPU
-    return idx.to(pos.device)
-
-
-def safe_radius(x, y, r, batch_x, batch_y):
-    x_c, y_c = x.cpu(), y.cpu()
-    bx_c, by_c = batch_x.cpu(), batch_y.cpu()
-    # Run radius search
-    row, col = radius(x_c, y_c, r, bx_c, by_c)
-    # Move edges back to GPU
-    return torch.stack([col, row], dim=0).to(x.device)
-
-
 class ResPointBlock(nn.Module):
     """A Residual Block for Point Clouds using PointConv"""
 
@@ -118,10 +99,10 @@ class DentalResPointNet(nn.Module):
         x0, pos0, batch0 = data.pos, data.pos, data.batch
 
         # --- LAYER 1 (Downsampling) ---
-        idx1 = safe_fps(pos0, batch0, ratio=0.25)
+        idx1 = fps(pos0, batch0, ratio=0.25)
         # r=0.1 assumes normalized data; increase to ~2.0 if mesh is in mm
-        row, col = safe_radius(pos0, pos0[idx1], r=0.1, batch_x=batch0,
-                               batch_y=batch0[idx1], max_num_neighbors=32)
+        row, col = radius(pos0, pos0[idx1], r=0.1, batch_x=batch0,
+                          batch_y=batch0[idx1], max_num_neighbors=32)
         edge_index1 = torch.stack([col, row], dim=0)
         x1 = self.enc1_a(x0, pos0, edge_index1)[idx1]
         # Reuse edges for speed
@@ -129,18 +110,18 @@ class DentalResPointNet(nn.Module):
         pos1, batch1 = pos0[idx1], batch0[idx1]
 
         # --- LAYER 2 (Downsampling) ---
-        idx2 = safe_fps(pos1, batch1, ratio=0.25)
-        row, col = safe_radius(pos1, pos1[idx2], r=0.2, batch_x=batch1,
-                               batch_y=batch1[idx2], max_num_neighbors=32)
+        idx2 = fps(pos1, batch1, ratio=0.25)
+        row, col = radius(pos1, pos1[idx2], r=0.2, batch_x=batch1,
+                          batch_y=batch1[idx2], max_num_neighbors=32)
         edge_index2 = torch.stack([col, row], dim=0)
         x2 = self.enc2_a(x1, pos1, edge_index2)[idx2]
         x2 = self.enc2_b(x2, pos1[idx2], edge_index2[:, ::4])
         pos2, batch2 = pos1[idx2], batch1[idx2]
 
         # --- LAYER 3 (Bottleneck) ---
-        idx3 = safe_fps(pos2, batch2, ratio=0.25)
-        row, col = safe_radius(pos2, pos2[idx3], r=0.4, batch_x=batch2,
-                               batch_y=batch2[idx3], max_num_neighbors=32)
+        idx3 = fps(pos2, batch2, ratio=0.25)
+        row, col = radius(pos2, pos2[idx3], r=0.4, batch_x=batch2,
+                          batch_y=batch2[idx3], max_num_neighbors=32)
         edge_index3 = torch.stack([col, row], dim=0)
         x3 = self.enc3(x2, pos2, edge_index3)[idx3]
         pos3, batch3 = pos2[idx3], batch2[idx3]
