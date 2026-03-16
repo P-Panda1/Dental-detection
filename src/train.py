@@ -141,8 +141,7 @@ def train():
             batch = batch.to(config.DEVICE)
             optimizer.zero_grad()
             logits = model(batch)
-            loss = F.cross_entropy(logits, batch.y - 1,
-                                   weight=config.LOSS_WEIGHTS)
+            loss = F.cross_entropy(logits, batch.y - 1)
             loss.backward()
             optimizer.step()
             total_train_loss += loss.item()
