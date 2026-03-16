@@ -222,14 +222,11 @@ class DentalMetricDGCNN(nn.Module):
         )                                                   # [N, 1024]
 
         # ── Embeddings ──────────────────────────────────────────────────
-        combined = torch.cat([local_feat, global_feat], dim=1)  # [N, 1280]
-        embeddings = self.embedding_head(
-            combined)              # [N, embed_dim]
+        combined = torch.cat([local_feat, global_feat], dim=1)
+        embeddings = self.embedding_head(combined)
 
         # ── ArcFace logits ──────────────────────────────────────────────
-        # Labels must be 0-indexed here AND in the loss call.
-        # data.y is 1-indexed (1=Gum, 2=Border, 3=Tooth), so subtract 1.
-        # [N]  values: 0,1,2
-        labels_0idx = data.y - 1
-        logits = self.arcface(embeddings, labels_0idx)          # [N, 3]
+        # At inference data.y is None — ArcFace handles this via self.training check
+        labels_0idx = (data.y - 1) if (data.y is not None) else None
+        logits = self.arcface(embeddings, labels_0idx)
         return logits
