@@ -1,3 +1,5 @@
+from torch_geometric.nn import global_max_pool
+from torch_geometric.nn import SAModule, FPModule, MLP
 from torch_geometric.nn import DynamicEdgeConv, MLP
 import torch
 import torch.nn as nn
@@ -39,6 +41,51 @@ class PointArcFace(nn.Module):
         output = (one_hot * target_logit) + ((1.0 - one_hot) * cosine)
 
         return output * self.s
+
+
+class PointNet2Backbone(nn.Module):
+    def __init__(self, num_classes=3, embed_dim=128):
+        super().__init__()
+
+        # 1. ENCODER (Set Abstraction Layers)
+        # SA1: Groups points into local clusters to find edges/textures
+        self.sa1_module = SAModule(0.2, 0.05, MLP([3 + 3, 64, 64, 128]))
+        # SA2: Groups those clusters to understand larger structures (tooth shape)
+        self.sa2_module = SAModule(0.25, 0.1, MLP([128 + 3, 128, 128, 256]))
+        # SA3: Condenses everything into a global context vector
+        self.sa3_module = SAModule(None, None, MLP([256 + 3, 256, 512, 1024]))
+
+        # 2. DECODER (Feature Propagation Layers)
+        # FP3: Spreads global info back to SA2 clusters
+        self.fp3_module = FPModule(1024, MLP([1024 + 256, 256, 256]))
+        # FP2: Spreads info back to SA1 clusters
+        self.fp2_module = FPModule(256, MLP([256 + 128, 256, 128]))
+        # FP1: Spreads info back to the original 8192 points
+        self.fp1_module = FPModule(128, MLP([128 + 3, 128, 128, embed_dim]))
+
+        # 3. METRIC HEAD
+        self.arcface = PointArcFace(
+            in_features=embed_dim, out_features=num_classes)
+
+    def forward(self, data):
+        # We start with original points
+        sa0_out = (data.x, data.pos, data.batch)
+
+        # --- Downsampling Path ---
+        sa1_out = self.sa1_module(*sa0_out)
+        sa2_out = self.sa2_module(*sa1_out)
+        sa3_out = self.sa3_module(*sa2_out)
+
+        # --- Upsampling Path (Skip Connections) ---
+        x, pos, batch = sa3_out
+        x = self.fp3_module(x, pos, batch, *sa2_out)
+        x = self.fp2_module(x, pos, batch, *sa1_out)
+        x = self.fp1_module(x, pos, batch, *sa0_out)
+
+        # x is now a [8192, embed_dim] feature matrix
+        logits = self.arcface(x, data.y)
+
+        return logits
 
 
 class DentalMetricDGCNN(nn.Module):
