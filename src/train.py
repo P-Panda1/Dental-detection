@@ -96,33 +96,18 @@ def isolated_plotter(points, gt_y, preds, epoch):
 
 
 def balanced_mean_loss(logits, labels, num_classes=3):
-    """
-    Computes cross-entropy per class independently, then takes
-    the unweighted mean across classes. Each class contributes
-    equally regardless of how many points it has.
+    # Compute per-point CE loss without reduction
+    per_point_loss = F.cross_entropy(logits, labels, reduction='none')  # [N]
 
-    Args:
-        logits: [N, num_classes]
-        labels: [N]  — 0-indexed
-    Returns:
-        scalar loss
-    """
-    class_losses = []
+    # Compute mean loss per class using scatter, fully on GPU
+    class_counts = torch.bincount(labels, minlength=num_classes).float()  # [C]
+    class_sums = torch.zeros(num_classes, device=logits.device)
+    class_sums.scatter_add_(0, labels, per_point_loss)
 
-    for c in range(num_classes):
-        mask = labels == c
-
-        # Skip if this class has no points in the batch
-        if mask.sum() == 0:
-            continue
-
-        class_logits = logits[mask]        # [n_c, num_classes]
-        class_labels = labels[mask]        # [n_c]
-
-        loss_c = F.cross_entropy(class_logits, class_labels)
-        class_losses.append(loss_c)
-
-    return torch.stack(class_losses).mean()
+    # Only average over classes that actually appear in this batch
+    mask = class_counts > 0
+    class_means = class_sums[mask] / class_counts[mask]
+    return class_means.mean()
 
 
 def dice_loss(logits, labels, num_classes=3, smooth=1e-6):

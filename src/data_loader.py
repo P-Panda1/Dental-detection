@@ -16,40 +16,39 @@ from transformations import (
 
 
 class ComputeNormalsFromPos:
-    """
-    Recomputes normals from current (post-alignment) pos via PCA on
-    local neighborhood, then sets x = normals only (no absolute XYZ).
-    Stripping absolute position forces the model to learn local geometry
-    rather than memorizing spatial location.
-    """
-
     def __init__(self, k=10):
         self.k = k
 
     def __call__(self, data):
-        pos = data.pos                                        # [N, 3]
-        batch = torch.zeros(pos.shape[0], dtype=torch.long)
+        pos = data.pos                                    # [N, 3]
+        N = pos.shape[0]
+        batch = torch.zeros(N, dtype=torch.long)
 
-        # knn returns [2, N*k]: row0=query idx, row1=source idx
         edge_index = knn(pos, pos, k=self.k,
-                         batch_x=batch, batch_y=batch)
+                         batch_x=batch, batch_y=batch)     # [2, N*k]
 
-        normals = torch.zeros_like(pos)
-        for i in range(pos.shape[0]):
-            neighbor_idx = edge_index[1][edge_index[0] == i]
-            neighbors = pos[neighbor_idx] - pos[i]
-            if neighbors.shape[0] < 3:
-                continue
-            cov = neighbors.T @ neighbors
-            _, eigvecs = torch.linalg.eigh(cov)
-            normals[i] = eigvecs[:, 0]   # smallest eigenvalue → normal
+        # dst=center, src=neighbor
+        src, dst = edge_index[0], edge_index[1]
+        # [N*k, 3] relative vectors
+        neighbors = pos[src] - pos[dst]
 
-        # Unit normalize
+        # Build covariance matrices for all points at once
+        # neighbors: [N*k, 3] → we need [N, 3, 3]
+        # scatter outer products: cov[i] += neighbors[e].T @ neighbors[e]
+        cov = torch.zeros(N, 3, 3)
+        cov.scatter_add_(
+            0,
+            dst.view(-1, 1, 1).expand(-1, 3, 3),
+            neighbors.unsqueeze(2) * neighbors.unsqueeze(1)  # [N*k, 3, 3]
+        )
+
+        # Batch eigendecomposition — much faster than per-point loop
+        _, eigvecs = torch.linalg.eigh(cov)                # [N, 3, 3]
+        # smallest eigenvec [N, 3]
+        normals = eigvecs[:, :, 0]
+
         norms = normals.norm(dim=1, keepdim=True).clamp(min=1e-8)
-        normals = normals / norms
-
-        # x = normals only — no absolute XYZ position leak
-        data.x = normals                                        # [N, 3]
+        data.x = normals / norms                        # [N, 3]
         return data
 
 
