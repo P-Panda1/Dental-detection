@@ -95,17 +95,17 @@ def train():
     train_loader, val_loader, _ = get_dental_loaders(
         "../data", batch_size=config.BATCH_SIZE)
 
-    # model = DentalMetricDGCNN(
-    #     k=config.K_NEIGHBORS,
-    #     num_classes=config.NUM_CLASSES,
-    #     embed_dim=config.GLOBAL_EMBED_DIM // 8
-    # ).to(config.DEVICE)
-
-    model = DentalPointTransformer(
+    model = DentalMetricDGCNN(
         k=config.K_NEIGHBORS,
         num_classes=config.NUM_CLASSES,
-        embed_dim=config.EMBEDDING_DIM
+        embed_dim=config.GLOBAL_EMBED_DIM // 8
     ).to(config.DEVICE)
+
+    # model = DentalPointTransformer(
+    #     k=config.K_NEIGHBORS,
+    #     num_classes=config.NUM_CLASSES,
+    #     embed_dim=config.EMBEDDING_DIM
+    # ).to(config.DEVICE)
 
     # model.compile()  # Optional: Use PyTorch 2.0 compilation for potential speedup
 

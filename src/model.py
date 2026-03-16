@@ -182,10 +182,13 @@ class DentalMetricDGCNN(nn.Module):
             in_features=embed_dim, out_features=num_classes)
 
     def forward(self, data):
-        x, batch, label = data.x, data.batch, data.y
+        # x contains [pos, normals] (6 channels)
+        # pos contains just [XYZ] (3 channels)
+        x, pos, batch, label = data.x, data.pos, data.batch, data.y
 
-        # Multi-scale Local Feature Extraction
-        x1 = self.conv1(x, batch)
+        # Pass pos to the 'pos' argument so k-NN happens in 3D space,
+        # while x provides the 6D features for the MLP.
+        x1 = self.conv1(x, pos, batch)
         x2 = self.conv2(x1, batch)
         x3 = self.conv3(x2, batch)
 
