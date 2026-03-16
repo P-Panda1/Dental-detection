@@ -1,8 +1,6 @@
-from torch_cluster import knn as knn_cluster
-from torch_geometric.nn import MLP, fps, radius
-from torch_geometric.nn.conv import PointConv
-from torch_geometric.nn.unpool import knn_interpolate
-from torch_geometric.nn import DynamicEdgeConv, MLP
+from torch_geometric.utils import add_self_loops
+from torch_geometric.nn import GATv2Conv, MLP, global_max_pool
+from torch_geometric.nn import DynamicEdgeConv
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -45,104 +43,80 @@ class PointArcFace(nn.Module):
         return output * self.s
 
 
-class ResPointBlock(nn.Module):
-    def __init__(self, in_channels, out_channels):
+class TransformerBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, heads=4):
         super().__init__()
-        self.conv = PointConv(local_nn=MLP(
-            [in_channels + 3, out_channels, out_channels]))
-        self.shortcut = nn.Sequential(
-            nn.Linear(in_channels, out_channels),
-            nn.BatchNorm1d(out_channels)
-        ) if in_channels != out_channels else nn.Identity()
-        self.bn = nn.BatchNorm1d(out_channels)
-        self.relu = nn.ReLU()
+        # GATv2 is a robust dynamic attention mechanism
+        self.attn = GATv2Conv(in_channels, out_channels //
+                              heads, heads=heads, add_self_loops=True)
+        self.ffn = nn.Sequential(
+            nn.Linear(out_channels, out_channels),
+            nn.ReLU(),
+            nn.Linear(out_channels, out_channels)
+        )
+        self.norm1 = nn.BatchNorm1d(out_channels)
+        self.norm2 = nn.BatchNorm1d(out_channels)
 
-    def forward(self, x, pos, edge_index):
-        identity = self.shortcut(x)
-        out = self.conv(x, pos, edge_index)
-        out = self.bn(out)
-        return self.relu(out + identity)
+    def forward(self, x, edge_index):
+        # Attention Layer
+        x_attn = self.attn(x, edge_index)
+        x = self.norm1(x_attn + x if x.size(-1) == x_attn.size(-1) else x_attn)
+
+        # Feed Forward Layer
+        x_ffn = self.ffn(x)
+        x = self.norm2(x_ffn + x)
+        return x
 
 
-class DentalResPointNet(nn.Module):
-    def __init__(self, num_classes=3, embed_dim=128):
+class DentalPointTransformer(nn.Module):
+    def __init__(self, num_classes=3, embed_dim=128, k=16):
         super().__init__()
-        self.enc1 = ResPointBlock(3, 64)
-        self.enc1_b = ResPointBlock(64, 64)
-        self.enc2 = ResPointBlock(64, 128)
-        self.enc2_b = ResPointBlock(128, 128)
-        self.enc3 = ResPointBlock(128, 256)
+        self.k = k
 
-        self.fp3 = MLP([256 + 128, 256, 128])
-        self.fp2 = MLP([128 + 64, 128, 128])
-        self.fp1 = MLP([128 + 3, 128, embed_dim])
+        # Initial projection from XYZ to Hidden
+        self.lin0 = nn.Linear(3, 64)
+
+        # Deep Transformer Layers (Residual)
+        self.layer1 = TransformerBlock(64, 64)
+        self.layer2 = TransformerBlock(64, 128)
+        self.layer3 = TransformerBlock(128, 128)
+        self.layer4 = TransformerBlock(128, 256)
+
+        # Final Embedding Head
+        self.head = nn.Sequential(
+            nn.Linear(256 + 128 + 64, 512),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(512, embed_dim)
+        )
 
         self.arcface = PointArcFace(
             in_features=embed_dim, out_features=num_classes)
 
     def forward(self, data):
-        # 1. Contiguous & Safe Initial Data
-        pos0 = data.pos.contiguous()
-        batch0 = data.batch.contiguous()
-        x0 = pos0  # Coordinates as initial features
+        pos, batch, label = data.pos, data.batch, data.y
 
-        # --- LAYER 1 (CPU Sampling for Blackwell Stability) ---
-        p0_c, b0_c = pos0.cpu(), batch0.cpu()
-        idx1 = fps(p0_c, b0_c, ratio=0.25).to(pos0.device)
+        # 1. Build a stable KNN Graph (one time only)
+        # Using a fixed K is much safer than Radius search
+        from torch_cluster import knn_graph
+        edge_index = knn_graph(pos, k=self.k, batch=batch)
 
-        row, col = radius(p0_c, p0_c[idx1.cpu()], r=0.1, batch_x=b0_c,
-                          batch_y=b0_c[idx1.cpu()], max_num_neighbors=32)
+        # 2. Extract Features
+        x = self.lin0(pos)
 
-        if row.numel() > 0:
-            edge_index1 = torch.stack([col, row], dim=0).to(pos0.device)
-        else:
-            edge_index1 = knn_cluster(
-                pos0, pos0[idx1], k=8, batch_x=batch0, batch_y=batch0[idx1])
+        x1 = self.layer1(x, edge_index)
+        x2 = self.layer2(x1, edge_index)
+        x3 = self.layer3(x2, edge_index)
+        x4 = self.layer4(x3, edge_index)
 
-        x1 = self.enc1(x0, pos0, edge_index1)[idx1]
-        pos1, batch1 = pos0[idx1], batch0[idx1]
-        x1 = self.enc1_b(x1, pos1, edge_index1[:, ::4] if edge_index1.size(
-            1) > 4 else edge_index1)
+        # 3. Multi-scale Concatenation (Skip Connections)
+        # We combine early fine details with late global features
+        combined = torch.cat([x1, x3, x4], dim=1)
 
-        # --- LAYER 2 ---
-        p1_c, b1_c = pos1.cpu(), batch1.cpu()
-        idx2 = fps(p1_c, b1_c, ratio=0.25).to(pos1.device)
-        row, col = radius(p1_c, p1_c[idx2.cpu()], r=0.2, batch_x=b1_c,
-                          batch_y=b1_c[idx2.cpu()], max_num_neighbors=32)
+        embeddings = self.head(combined)
+        logits = self.arcface(embeddings, label)
 
-        if row.numel() > 0:
-            edge_index2 = torch.stack([col, row], dim=0).to(pos1.device)
-        else:
-            edge_index2 = knn_cluster(
-                pos1, pos1[idx2], k=8, batch_x=batch1, batch_y=batch1[idx2])
-
-        x2 = self.enc2(x1, pos1, edge_index2)[idx2]
-        pos2, batch2 = pos1[idx2], batch1[idx2]
-        x2 = self.enc2_b(x2, pos2, edge_index2[:, ::4] if edge_index2.size(
-            1) > 4 else edge_index2)
-
-        # --- LAYER 3 ---
-        p2_c, b2_c = pos2.cpu(), batch2.cpu()
-        idx3 = fps(p2_c, b2_c, ratio=0.25).to(pos2.device)
-        edge_index3 = knn_cluster(
-            pos2, pos2[idx3], k=16, batch_x=batch2, batch_y=batch2[idx3])
-        x3 = self.enc3(x2, pos2, edge_index3)[idx3]
-        pos3, batch3 = pos2[idx3], batch2[idx3]
-
-        # --- DECODER ---
-        up3 = knn_interpolate(x3, pos3, pos2, batch_x=batch3,
-                              batch_y=batch2, k=min(3, x3.size(0)))
-        x_up2 = self.fp3(torch.cat([up3, x2], dim=-1))
-
-        up2 = knn_interpolate(x_up2, pos2, pos1, batch_x=batch2,
-                              batch_y=batch1, k=min(3, x_up2.size(0)))
-        x_up1 = self.fp2(torch.cat([up2, x1], dim=-1))
-
-        up1 = knn_interpolate(x_up1, pos1, pos0, batch_x=batch1,
-                              batch_y=batch0, k=min(3, x_up1.size(0)))
-        embeddings = self.fp1(torch.cat([up1, pos0], dim=-1))
-
-        return self.arcface(embeddings, data.y)
+        return logits
 
 
 class DentalMetricDGCNN(nn.Module):
