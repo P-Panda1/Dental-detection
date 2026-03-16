@@ -46,47 +46,34 @@ class PointArcFace(nn.Module):
 
 
 class LiteGraphUNet(GraphUNet):
+    def __init__(self, *args, **kwargs):
+        # 1. Store the actual input dimension (e.g., 3 for XYZ)
+        actual_in_channels = kwargs.get('in_channels', 3)
+
+        # 2. Force the parent class to see 'in_channels' as the 'hidden_channels'
+        # This ensures all internal GraphUNet layers (convs/pools) are size 64
+        kwargs['in_channels'] = kwargs.get('hidden_channels', 64)
+
+        super().__init__(*args, **kwargs)
+
+        # 3. Create our custom projection layer to go from 3 -> 64
+        self.lin0 = nn.Linear(actual_in_channels, kwargs['in_channels'])
+
     def forward(self, x, edge_index, batch, edge_weight=None):
-        """"Forward pass without the expensive adjacency augmentation"""
-        # We manually perform the forward pass to skip A @ A
-        x_all = [x]
-        perms = []
+        # Project raw features to the hidden dimension
+        x = self.lin0(x)
 
-        for i in range(1, self.depth + 1):
-            # --- THIS IS THE FIX ---
-            # Instead of augmenting (squaring) the matrix,
-            # we just ensure self-loops exist for connectivity stability.
-            edge_index, edge_weight = add_self_loops(
-                edge_index, edge_weight, num_nodes=x.size(0))
-
-            # Standard Pooling
-            x, edge_index, edge_weight, batch, perm, _ = self.pools[i - 1](
-                x, edge_index, edge_weight, batch)
-
-            # Standard Convolution
-            x = self.down_convs[i - 1](x, edge_index, edge_weight)
-            x_all.append(x)
-            perms.append(perm)
-
-        # Decoder path (Upsampling)
-        for i in range(self.depth):
-            j = self.depth - 1 - i
-            res = x_all[j]
-            perm = perms[j]
-
-            x = self.unpools[i](x, perm)
-            x = x + res if self.sum_res else torch.cat([x, res], dim=-1)
-            x = self.up_convs[i](x, edge_index, edge_weight)
-
-        return x
+        # Call the parent forward method, which now has all attributes (unpools, etc.)
+        return super().forward(x, edge_index, batch, edge_weight)
 
 
 class DentalGraphUNet(nn.Module):
-    def __init__(self, num_classes=3, embed_dim=128, k=20):  # Add k here
+    def __init__(self, num_classes=3, embed_dim=128, k=20):
         super().__init__()
-        self.k = k  # Store it!
+        self.k = k
 
         self.backbone = LiteGraphUNet(
+            # Pass hidden_channels to in_channels so internal layers match
             in_channels=3,
             hidden_channels=64,
             out_channels=embed_dim,

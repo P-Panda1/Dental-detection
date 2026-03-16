@@ -103,10 +103,11 @@ def train():
 
     model = DentalGraphUNet(
         num_classes=config.NUM_CLASSES,
-        embed_dim=config.EMBEDDING_DIM
+        embed_dim=config.EMBEDDING_DIM,
+        k=config.K_NEIGHBORS
     ).to(config.DEVICE)
 
-    model.compile()  # Optional: Use PyTorch 2.0 compilation for potential speedup
+    # model.compile()  # Optional: Use PyTorch 2.0 compilation for potential speedup
 
     # --- LOAD BEST MODEL IF IT EXISTS ---
     best_path = os.path.join(config.CHECKPOINT_DIR, "best_model.pth")
