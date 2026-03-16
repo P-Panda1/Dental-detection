@@ -18,19 +18,20 @@ class PointArcFace(nn.Module):
             torch.FloatTensor(out_features, in_features))
         nn.init.xavier_uniform_(self.weight)
 
-    def forward(self, embeddings, labels):
-        # Normalize both embeddings and weights onto the unit sphere
+    def forward(self, embeddings, labels=None):
         cos_theta = F.linear(F.normalize(embeddings), F.normalize(self.weight))
         cos_theta = cos_theta.clamp(-1, 1)
 
-        # Add angular margin only to the correct class
+        # Skip margin entirely at inference — just return scaled cosine logits
+        if not self.training or labels is None:
+            return cos_theta * self.s
+
+        # Training: add angular margin to the correct class only
         theta = torch.acos(cos_theta)
         one_hot = torch.zeros_like(cos_theta)
         one_hot.scatter_(1, labels.view(-1, 1), 1.0)
-
         output = torch.cos(theta + one_hot * self.m)
-        output = output * self.s
-        return output
+        return output * self.s
 # class PointArcFace(nn.Module):
 #     def __init__(self, in_features, out_features, s=30.0, m=0.50):
 #         super(PointArcFace, self).__init__()
