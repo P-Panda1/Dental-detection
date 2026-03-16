@@ -1,5 +1,6 @@
 import matplotlib.pyplot as plt
 import multiprocessing
+from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
 from IPython.display import Image, display
 import pyvista as pv
 import torch
@@ -162,13 +163,12 @@ def train():
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=config.LR, weight_decay=config.WEIGHT_DECAY)
 
-    # T_max is the number of steps to reach the minimum LR (usually set to total epochs)
-    # eta_min is the lowest the learning rate will go (e.g., 1e-6)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer,
-        T_max=config.EPOCHS,
-        eta_min=1e-6
-    )
+    warmup = LinearLR(optimizer, start_factor=0.1,
+                      end_factor=1.0, total_iters=10)
+    cosine = CosineAnnealingLR(
+        optimizer, T_max=config.EPOCHS - 10, eta_min=1e-6)
+    scheduler = SequentialLR(optimizer, schedulers=[
+                             warmup, cosine], milestones=[10])
     best_val_loss = float('inf')
 
     for epoch in range(1, config.EPOCHS + 1):
