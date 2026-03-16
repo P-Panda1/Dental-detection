@@ -46,7 +46,13 @@ pip install torch-geometric -f https://data.pyg.org/whl/torch-1.13.1+cpu.html
 # Install torch-cluster 
 # Using this should work in all cases 
 # pip install torch-cluster -f https://data.pyg.org/whl/torch-$(python -c "import torch; print(torch.__version__.split('+')[0])").html
-pip install --no-index torch-cluster -f https://data.pyg.org/whl/torch-2.4.1+cu124.html
+# pip install --no-index torch-cluster -f https://data.pyg.org/whl/torch-2.4.1+cu124.html
+
+export TORCH=$(python -c "import torch; print(torch.__version__.split('+')[0])")
+export CUDA=$(python -c "import torch; print('cu' + torch.version.cuda.replace('.', ''))")
+
+pip install --force-reinstall torch-scatter torch-sparse torch-cluster torch-spline-conv \
+-f https://data.pyg.org/whl/torch-${TORCH}+${CUDA}.html
 
 # Install the rest
 pip install -r requirements.txt
