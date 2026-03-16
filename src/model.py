@@ -45,21 +45,14 @@ class PointArcFace(nn.Module):
 
 
 class ResPointBlock(nn.Module):
-    """A Residual Block for Point Clouds using PointConv"""
-
     def __init__(self, in_channels, out_channels):
         super().__init__()
-        # Note: PointConv takes (x, pos, edge_index)
-        # local_nn learns the relationship between points in a radius
         self.conv = PointConv(local_nn=MLP(
             [in_channels + 3, out_channels, out_channels]))
-
-        # Shortcut for the residual connection
         self.shortcut = nn.Sequential(
             nn.Linear(in_channels, out_channels),
             nn.BatchNorm1d(out_channels)
         ) if in_channels != out_channels else nn.Identity()
-
         self.bn = nn.BatchNorm1d(out_channels)
         self.relu = nn.ReLU()
 
@@ -73,21 +66,14 @@ class ResPointBlock(nn.Module):
 class DentalResPointNet(nn.Module):
     def __init__(self, num_classes=3, embed_dim=128):
         super().__init__()
-
-        # --- ENCODER STAGES ---
-        # Stage 1: High Res (8192 -> 2048)
-        self.enc1_a = ResPointBlock(3, 64)   # Use pos as initial features
-        self.enc1_b = ResPointBlock(64, 64)  # Deep residual layer
-
-        # Stage 2: Mid Res (2048 -> 512)
+        # Encoder
+        self.enc1_a = ResPointBlock(3, 64)
+        self.enc1_b = ResPointBlock(64, 64)
         self.enc2_a = ResPointBlock(64, 128)
         self.enc2_b = ResPointBlock(128, 128)
-
-        # Stage 3: Low Res (512 -> 128)
         self.enc3 = ResPointBlock(128, 256)
 
-        # --- DECODER STAGES (Feature Propagation) ---
-        # These MLPs blend the upsampled features with the skip connections
+        # Decoder
         self.fp3 = MLP([256 + 128, 256, 128])
         self.fp2 = MLP([128 + 64, 128, 128])
         self.fp1 = MLP([128 + 3, 128, embed_dim])
@@ -98,18 +84,17 @@ class DentalResPointNet(nn.Module):
     def forward(self, data):
         x0, pos0, batch0 = data.pos, data.pos, data.batch
 
-        # --- LAYER 1 (Downsampling) ---
+        # --- LAYER 1 ---
         idx1 = fps(pos0, batch0, ratio=0.25)
-        # r=0.1 assumes normalized data; increase to ~2.0 if mesh is in mm
+        # Ensure row/col are generated correctly for the sampled subset
         row, col = radius(pos0, pos0[idx1], r=0.1, batch_x=batch0,
                           batch_y=batch0[idx1], max_num_neighbors=32)
         edge_index1 = torch.stack([col, row], dim=0)
         x1 = self.enc1_a(x0, pos0, edge_index1)[idx1]
-        # Reuse edges for speed
         x1 = self.enc1_b(x1, pos0[idx1], edge_index1[:, ::4])
         pos1, batch1 = pos0[idx1], batch0[idx1]
 
-        # --- LAYER 2 (Downsampling) ---
+        # --- LAYER 2 ---
         idx2 = fps(pos1, batch1, ratio=0.25)
         row, col = radius(pos1, pos1[idx2], r=0.2, batch_x=batch1,
                           batch_y=batch1[idx2], max_num_neighbors=32)
@@ -118,7 +103,7 @@ class DentalResPointNet(nn.Module):
         x2 = self.enc2_b(x2, pos1[idx2], edge_index2[:, ::4])
         pos2, batch2 = pos1[idx2], batch1[idx2]
 
-        # --- LAYER 3 (Bottleneck) ---
+        # --- LAYER 3 ---
         idx3 = fps(pos2, batch2, ratio=0.25)
         row, col = radius(pos2, pos2[idx3], r=0.4, batch_x=batch2,
                           batch_y=batch2[idx3], max_num_neighbors=32)
@@ -126,18 +111,15 @@ class DentalResPointNet(nn.Module):
         x3 = self.enc3(x2, pos2, edge_index3)[idx3]
         pos3, batch3 = pos2[idx3], batch2[idx3]
 
-        # --- DECODER (Upsampling with Skip Connections) ---
-        # 1. From Bottleneck to Layer 2
+        # --- DECODER ---
         up3 = knn_interpolate(
             x3, pos3, pos2, batch_x=batch3, batch_y=batch2, k=3)
         x_up2 = self.fp3(torch.cat([up3, x2], dim=-1))
 
-        # 2. From Layer 2 to Layer 1
         up2 = knn_interpolate(
             x_up2, pos2, pos1, batch_x=batch2, batch_y=batch1, k=3)
         x_up1 = self.fp2(torch.cat([up2, x1], dim=-1))
 
-        # 3. From Layer 1 to Original Resolution
         up1 = knn_interpolate(
             x_up1, pos1, pos0, batch_x=batch1, batch_y=batch0, k=3)
         embeddings = self.fp1(torch.cat([up1, pos0], dim=-1))
