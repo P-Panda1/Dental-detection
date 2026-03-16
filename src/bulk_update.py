@@ -43,57 +43,77 @@ def bulk_label_data(input_dir="../data/unlabeled", output_dir="../data/labeled")
     print(f"Found {len(files)} unlabeled files. Starting inference...")
 
     for filename in tqdm(files, desc="Labeling Jaws"):
-        path = os.path.join(input_dir, filename)
+        try:
+            path = os.path.join(input_dir, filename)
 
-        mesh = pv.read(path)
-        mesh = mesh.compute_normals(
-            cell_normals=False, point_normals=True, flip_normals=True
-        )
+            # 3. Build features exactly like DentalDataset.get()
+            mesh = pv.read(path)
+            mesh = mesh.compute_normals(
+                cell_normals=False, point_normals=True, flip_normals=True
+            )
 
-        pos = torch.from_numpy(mesh.points).float()
-        normals = torch.from_numpy(mesh['Normals']).float()
-        x = torch.cat([pos, normals], dim=-1)
+            pos = torch.from_numpy(mesh.points).float()
+            normals = torch.from_numpy(mesh['Normals']).float()
+            x = torch.cat([pos, normals], dim=-1)   # [N, 6]
 
-        raw_data = Data(pos=pos, x=x)
+            raw_data = Data(pos=pos, x=x)
 
-        aligned_data = align(raw_data.clone())
-        low_res_data = sampler(aligned_data.clone())
+            # 4. Apply same alignment + sampling as training
+            aligned_data = align(raw_data.clone())
+            low_res_data = sampler(aligned_data.clone())
 
-        low_res_data = low_res_data.to(device)
-        low_res_data.y = torch.zeros(
-            low_res_data.pos.shape[0], dtype=torch.long
-        ).to(device)
+            # 5. Move to device and set required fields
+            low_res_data = low_res_data.to(device)
 
-        with torch.no_grad():
-            logits = model(low_res_data)
-            low_res_preds = torch.argmax(logits, dim=1).cpu()
+            # Dummy labels for ArcFace forward (margin is skipped in eval mode)
+            low_res_data.y = torch.zeros(
+                low_res_data.pos.shape[0], dtype=torch.long
+            ).to(device)
 
-        assign_idx = knn(low_res_data.pos.cpu(), aligned_data.pos, k=1)
-        high_res_preds = low_res_preds[assign_idx[1]].numpy()
+            # batch tensor: all points belong to graph 0 (single graph inference)
+            low_res_data.batch = torch.zeros(
+                low_res_data.pos.shape[0], dtype=torch.long
+            ).to(device)
 
-        points = mesh.points
-        faces = pv.read(path).faces.reshape(-1, 4)[:, 1:]
+            # 6. Inference
+            with torch.no_grad():
+                logits = model(low_res_data)
+                low_res_preds = torch.argmax(logits, dim=1).cpu()
 
-        colors = np.zeros((len(points), 3), dtype=np.uint8)
-        colors[high_res_preds == 0] = [255, 0,   0]
-        colors[high_res_preds == 1] = [0,   0,   0]
-        colors[high_res_preds == 2] = [255, 255, 255]
+            # 7. KNN upsample back to original resolution
+            assign_idx = knn(low_res_data.pos.cpu(), aligned_data.pos, k=1)
+            high_res_preds = low_res_preds[assign_idx[1]].numpy()
 
-        out_mesh = meshio.Mesh(
-            points,
-            [("triangle", faces)],
-            point_data={
-                "red":   colors[:, 0],
-                "green": colors[:, 1],
-                "blue":  colors[:, 2],
-                "label": high_res_preds.astype(np.float32)
-            }
-        )
+            # 8. Color mapping (0=Gum, 1=Border, 2=Tooth)
+            points = mesh.points
+            faces = pv.read(path).faces.reshape(-1, 4)[:, 1:]
 
-        new_filename = filename.replace(".ply", "_labeled.ply")
-        output_path = os.path.join(output_dir, new_filename)
-        out_mesh.write(output_path)
-        print(f"Saved: {output_path}")
+            colors = np.zeros((len(points), 3), dtype=np.uint8)
+            colors[high_res_preds == 0] = [255, 0,   0]   # Gum    → Red
+            colors[high_res_preds == 1] = [0,   0,   0]   # Border → Black
+            colors[high_res_preds == 2] = [255, 255, 255]   # Tooth  → White
+
+            # 9. Save
+            out_mesh = meshio.Mesh(
+                points,
+                [("triangle", faces)],
+                point_data={
+                    "red":   colors[:, 0],
+                    "green": colors[:, 1],
+                    "blue":  colors[:, 2],
+                    "label": high_res_preds.astype(np.float32)
+                }
+            )
+
+            new_filename = filename.replace(".ply", "_labeled.ply")
+            output_path = os.path.join(output_dir, new_filename)
+            out_mesh.write(output_path)
+            print(f"Saved: {output_path}")
+
+        except Exception as e:
+            print(f"\nFailed to process {filename}: {e}")
+
+    print(f"\n--- Done! Labeled files saved to {output_dir} ---")
 
 
 if __name__ == "__main__":
