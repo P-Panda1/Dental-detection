@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 # Import custom modules
 from config import config
-from model import DentalMetricDGCNN, DentalGraphUNet
+from model import DentalMetricDGCNN, DentalResPointNet
 from data_loader import get_dental_loaders
 
 import torch
@@ -101,10 +101,9 @@ def train():
     #     embed_dim=config.GLOBAL_EMBED_DIM // 8
     # ).to(config.DEVICE)
 
-    model = DentalGraphUNet(
+    model = DentalResPointNet(
         num_classes=config.NUM_CLASSES,
-        embed_dim=config.EMBEDDING_DIM,
-        k=config.K_NEIGHBORS
+        embed_dim=config.EMBEDDING_DIM
     ).to(config.DEVICE)
 
     # model.compile()  # Optional: Use PyTorch 2.0 compilation for potential speedup
