@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 # Import custom modules
 from config import config
-from model import DentalMetricDGCNN, DentalResPointNet
+from model import DentalMetricDGCNN, DentalPointTransformer
 from data_loader import get_dental_loaders
 
 import torch
@@ -101,7 +101,8 @@ def train():
     #     embed_dim=config.GLOBAL_EMBED_DIM // 8
     # ).to(config.DEVICE)
 
-    model = DentalResPointNet(
+    model = DentalPointTransformer(
+        k=config.K_NEIGHBORS,
         num_classes=config.NUM_CLASSES,
         embed_dim=config.EMBEDDING_DIM
     ).to(config.DEVICE)
