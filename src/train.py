@@ -98,7 +98,7 @@ def train():
     model = DentalMetricDGCNN(
         k=config.K_NEIGHBORS,
         num_classes=config.NUM_CLASSES,
-        embed_dim=config.GLOBAL_EMBED_DIM // 8
+        embed_dim=config.EMBEDDING_DIM
     ).to(config.DEVICE)
 
     # model = DentalPointTransformer(
