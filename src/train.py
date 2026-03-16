@@ -11,8 +11,20 @@ from tqdm import tqdm
 
 # Import custom modules
 from config import config
-from model import DentalMetricDGCNN, PointNet2Backbone
+from model import DentalMetricDGCNN, DentalGraphUNet
 from data_loader import get_dental_loaders
+
+import torch
+import gc
+
+
+def clear_gpu():
+    # Clear Python's garbage collector
+    gc.collect()
+    # Clear the PyTorch CUDA cache
+    torch.cuda.empty_cache()
+    # Optionally reset peak memory stats
+    torch.cuda.reset_peak_memory_stats()
 
 
 def save_checkpoint(model, optimizer, epoch, loss, is_best=False):
@@ -79,6 +91,7 @@ def isolated_plotter(points, gt_y, preds, epoch):
 
 
 def train():
+    clear_gpu()
     train_loader, val_loader, _ = get_dental_loaders(
         "../data", batch_size=config.BATCH_SIZE)
 
@@ -88,9 +101,9 @@ def train():
     #     embed_dim=config.GLOBAL_EMBED_DIM // 8
     # ).to(config.DEVICE)
 
-    model = PointNet2Backbone(
+    model = DentalGraphUNet(
         num_classes=config.NUM_CLASSES,
-        embed_dim=config.GLOBAL_EMBED_DIM // 8
+        embed_dim=config.EMBEDDING_DIM
     ).to(config.DEVICE)
 
     model.compile()  # Optional: Use PyTorch 2.0 compilation for potential speedup
