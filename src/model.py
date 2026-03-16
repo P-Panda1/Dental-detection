@@ -188,7 +188,7 @@ class DentalMetricDGCNN(nn.Module):
 
         # Pass pos to the 'pos' argument so k-NN happens in 3D space,
         # while x provides the 6D features for the MLP.
-        x1 = self.conv1(x, pos, batch)
+        x1 = self.conv1(x, batch)
         x2 = self.conv2(x1, batch)
         x3 = self.conv3(x2, batch)
 
