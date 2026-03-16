@@ -16,6 +16,11 @@ from data_loader import get_dental_loaders
 
 import torch
 import gc
+import warnings
+
+# Filter out the specific scatter acceleration warning from torch_geometric
+warnings.filterwarnings(
+    "ignore", message=".*accelerated via the 'torch-scatter' package.*")
 
 
 def clear_gpu():
