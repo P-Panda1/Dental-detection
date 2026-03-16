@@ -44,11 +44,15 @@ class PointArcFace(nn.Module):
         return output * self.s
 
 
-def custom_batched_knn_graph(pos, k, batch):
+def custom_batched_knn_graph(pos, k, batch=None):
     """
     A pure PyTorch implementation of batched KNN graph generation.
     Bypasses the need for torch_cluster and avoids OOM errors by processing per-batch.
     """
+    # 1. Handle the case where batch is None (single graph)
+    if batch is None:
+        batch = torch.zeros(pos.size(0), dtype=torch.long, device=pos.device)
+
     edge_indices = []
 
     # Process each graph in the batch separately
@@ -56,11 +60,14 @@ def custom_batched_knn_graph(pos, k, batch):
         mask = batch == b
         pos_b = pos[mask]
 
+        # 2. Skip if a batch index is somehow empty
+        if pos_b.size(0) == 0:
+            continue
+
         # Calculate pairwise distances for just this point cloud
         dist = torch.cdist(pos_b, pos_b)
 
         # Get top k nearest neighbors
-        # We use k+1 because a point is its own nearest neighbor (distance 0)
         actual_k = min(k + 1, pos_b.size(0))
         _, col_b = dist.topk(actual_k, dim=1, largest=False, sorted=False)
 
@@ -74,6 +81,10 @@ def custom_batched_knn_graph(pos, k, batch):
         row = orig_indices[row_b.reshape(-1)]
 
         edge_indices.append(torch.stack([col, row], dim=0))
+
+    # 3. Final safeguard in case no edges were generated at all
+    if len(edge_indices) == 0:
+        return torch.empty((2, 0), dtype=torch.long, device=pos.device)
 
     return torch.cat(edge_indices, dim=1)
 
