@@ -1,6 +1,5 @@
-from torch_geometric.utils import add_self_loops, remove_self_loops
-from torch_geometric.nn.models import GraphUNet
-from torch_geometric.nn import global_max_pool
+from torch_geometric.nn.unpool import knn_interpolate
+from torch_geometric.nn import PointConv, MLP, fps, radius
 from torch_geometric.nn import DynamicEdgeConv, MLP
 import torch
 import torch.nn as nn
@@ -44,103 +43,96 @@ class PointArcFace(nn.Module):
         return output * self.s
 
 
-def custom_batched_knn_graph(pos, k, batch=None):
-    """
-    A pure PyTorch implementation of batched KNN graph generation.
-    Bypasses the need for torch_cluster and avoids OOM errors by processing per-batch.
-    """
-    # 1. Handle the case where batch is None (single graph)
-    if batch is None:
-        batch = torch.zeros(pos.size(0), dtype=torch.long, device=pos.device)
+class ResPointBlock(nn.Module):
+    """A Residual Block for Point Clouds"""
 
-    edge_indices = []
-
-    # Process each graph in the batch separately
-    for b in batch.unique():
-        mask = batch == b
-        pos_b = pos[mask]
-
-        # 2. Skip if a batch index is somehow empty
-        if pos_b.size(0) == 0:
-            continue
-
-        # Calculate pairwise distances for just this point cloud
-        dist = torch.cdist(pos_b, pos_b)
-
-        # Get top k nearest neighbors
-        actual_k = min(k + 1, pos_b.size(0))
-        _, col_b = dist.topk(actual_k, dim=1, largest=False, sorted=False)
-
-        # Create row indices
-        row_b = torch.arange(pos_b.size(
-            0), device=pos.device).view(-1, 1).expand(-1, actual_k)
-
-        # Map the local batch indices back to the global indices
-        orig_indices = torch.where(mask)[0]
-        col = orig_indices[col_b.reshape(-1)]
-        row = orig_indices[row_b.reshape(-1)]
-
-        edge_indices.append(torch.stack([col, row], dim=0))
-
-    # 3. Final safeguard in case no edges were generated at all
-    if len(edge_indices) == 0:
-        return torch.empty((2, 0), dtype=torch.long, device=pos.device)
-
-    return torch.cat(edge_indices, dim=1)
-
-
-class LiteGraphUNet(GraphUNet):
-    def __init__(self, *args, **kwargs):
-        # 1. Store the actual input dimension (e.g., 3 for XYZ)
-        actual_in_channels = kwargs.get('in_channels', 3)
-
-        # 2. Force the parent class to see 'in_channels' as the 'hidden_channels'
-        # This ensures all internal GraphUNet layers (convs/pools) are size 64
-        kwargs['in_channels'] = kwargs.get('hidden_channels', 64)
-
-        super().__init__(*args, **kwargs)
-
-        # 3. Create our custom projection layer to go from 3 -> 64
-        self.lin0 = nn.Linear(actual_in_channels, kwargs['in_channels'])
-
-    def forward(self, x, edge_index, batch, edge_weight=None):
-        # Project raw features to the hidden dimension
-        x = self.lin0(x)
-
-        # Call the parent forward method, which now has all attributes (unpools, etc.)
-        return super().forward(x, edge_index, batch, edge_weight)
-
-
-class DentalGraphUNet(nn.Module):
-    def __init__(self, num_classes=3, embed_dim=128, k=20):
+    def __init__(self, in_channels, out_channels):
         super().__init__()
-        self.k = k
+        self.conv = PointConv(local_nn=MLP(
+            [in_channels + 3, out_channels, out_channels]))
+        self.shortcut = nn.Sequential(
+            nn.Linear(in_channels, out_channels),
+            nn.BatchNorm1d(out_channels)
+        ) if in_channels != out_channels else nn.Identity()
+        self.relu = nn.ReLU()
 
-        self.backbone = LiteGraphUNet(
-            # Pass hidden_channels to in_channels so internal layers match
-            in_channels=3,
-            hidden_channels=64,
-            out_channels=embed_dim,
-            depth=4,
-            pool_ratios=0.5,
-            sum_res=False
-        )
+    def forward(self, x, pos, edge_index):
+        identity = self.shortcut(x)
+        out = self.conv(x, pos, edge_index)
+        return self.relu(out + identity)
+
+
+class DentalResPointNet(nn.Module):
+    def __init__(self, num_classes=3, embed_dim=128):
+        super().__init__()
+
+        # Stage 1: High Res (8192 -> 2048)
+        self.enc1 = ResPointBlock(3, 64)
+        self.enc1_b = ResPointBlock(64, 64)  # Residual Layer 2
+
+        # Stage 2: Mid Res (2048 -> 512)
+        self.enc2 = ResPointBlock(64, 128)
+        self.enc2_b = ResPointBlock(128, 128)  # Residual Layer 2
+
+        # Stage 3: Low Res (512 -> 128)
+        self.enc3 = ResPointBlock(128, 256)
+
+        # Decoder / Feature Propagation
+        self.fp3 = MLP([256 + 128, 256, 128])
+        self.fp2 = MLP([128 + 64, 128, 128])
+        self.fp1 = MLP([128 + 3, 128, embed_dim])
 
         self.arcface = PointArcFace(
-            in_features=embed_dim,
-            out_features=num_classes
-        )
+            in_features=embed_dim, out_features=num_classes)
 
     def forward(self, data):
-        pos, batch, label = data.pos, data.batch, data.y
+        # We start with raw coordinates as features
+        x0, pos0, batch0 = data.pos, data.pos, data.batch
 
-        # Use self.k instead of config.K_NEIGHBORS
-        edge_index = custom_batched_knn_graph(pos, k=self.k, batch=batch)
+        # --- ENCODER 1 ---
+        idx1 = fps(pos0, batch0, ratio=0.25)
+        row, col = radius(pos0, pos0[idx1], r=0.1, batch_x=batch0,
+                          batch_y=batch0[idx1], max_num_neighbors=32)
+        edge_index1 = torch.stack([col, row], dim=0)
+        x1 = self.enc1(x0, pos0, edge_index1)[idx1]
+        # Simplified neighbor reuse
+        x1 = self.enc1_b(x1, pos0[idx1], edge_index1[:, ::4])
+        pos1, batch1 = pos0[idx1], batch0[idx1]
 
-        embeddings = self.backbone(pos, edge_index, batch)
-        logits = self.arcface(embeddings, label)
+        # --- ENCODER 2 ---
+        idx2 = fps(pos1, batch1, ratio=0.25)
+        row, col = radius(pos1, pos1[idx2], r=0.2, batch_x=batch1,
+                          batch_y=batch1[idx2], max_num_neighbors=32)
+        edge_index2 = torch.stack([col, row], dim=0)
+        x2 = self.enc2(x1, pos1, edge_index2)[idx2]
+        x2 = self.enc2_b(x2, pos1[idx2], edge_index2[:, ::4])
+        pos2, batch2 = pos1[idx2], batch1[idx2]
 
-        return logits
+        # --- ENCODER 3 ---
+        idx3 = fps(pos2, batch2, ratio=0.25)
+        row, col = radius(pos2, pos2[idx3], r=0.4, batch_x=batch2,
+                          batch_y=batch2[idx3], max_num_neighbors=32)
+        edge_index3 = torch.stack([col, row], dim=0)
+        x3 = self.enc3(x2, pos2, edge_index3)[idx3]
+        pos3, batch3 = pos2[idx3], batch2[idx3]
+
+        # --- DECODER with Skip Connections ---
+        # Up from x3 to pos2
+        upsampled3 = knn_interpolate(
+            x3, pos3, pos2, batch_x=batch3, batch_y=batch2, k=3)
+        x_up2 = self.fp3(torch.cat([upsampled3, x2], dim=-1))
+
+        # Up from x_up2 to pos1
+        upsampled2 = knn_interpolate(
+            x_up2, pos2, pos1, batch_x=batch2, batch_y=batch1, k=3)
+        x_up1 = self.fp2(torch.cat([upsampled2, x1], dim=-1))
+
+        # Up from x_up1 to pos0
+        upsampled1 = knn_interpolate(
+            x_up1, pos1, pos0, batch_x=batch1, batch_y=batch0, k=3)
+        embeddings = self.fp1(torch.cat([upsampled1, pos0], dim=-1))
+
+        return self.arcface(embeddings, data.y)
 
 
 class DentalMetricDGCNN(nn.Module):
