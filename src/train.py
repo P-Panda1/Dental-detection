@@ -134,22 +134,48 @@ def combined_loss(logits, labels, num_classes=3, dice_weight=0.5):
     return ce + dice_weight * dice
 
 
+def boundary_loss(logits, boundary_logits, boundary_score, labels, num_classes=3):
+    # Main segmentation loss
+    ce = balanced_mean_loss(logits, labels, num_classes)
+    dice = dice_loss(logits, labels, num_classes)
+
+    # Auxiliary boundary loss — weighted higher for border class points
+    # This forces the model to get boundaries right independently
+    border_mask = (labels == 1).float()                 # 1 where border
+    border_weight = 1.0 + 4.0 * border_mask              # border points weighted 5×
+    aux_loss = F.cross_entropy(
+        boundary_logits, labels, reduction='none'
+    )
+    aux_loss = (aux_loss * border_weight).mean()
+
+    # Boundary consistency: boundary_score should be HIGH near border class
+    # This is a soft supervision signal
+    with torch.no_grad():
+        target_score = border_mask.unsqueeze(1)
+    consistency = F.binary_cross_entropy(boundary_score, target_score)
+
+    return ce + 0.3 * dice + 0.4 * aux_loss + 0.1 * consistency
+
+
 def train():
     clear_gpu()
     train_loader, val_loader, _ = get_dental_loaders(
         "../data", batch_size=config.BATCH_SIZE)
 
-    # model = DentalMetricDGCNN(
-    #     k=config.K_NEIGHBORS,
-    #     num_classes=config.NUM_CLASSES,
-    #     embed_dim=config.EMBEDDING_DIM
-    # ).to(config.DEVICE)
+    model_type = 1
 
-    model = DentalBoundaryDGCNN(
-        k=config.K_NEIGHBORS,
-        num_classes=config.NUM_CLASSES,
-        embed_dim=config.EMBEDDING_DIM
-    ).to(config.DEVICE)
+    if model_type == 0:
+        model = DentalMetricDGCNN(
+            k=config.K_NEIGHBORS,
+            num_classes=config.NUM_CLASSES,
+            embed_dim=config.EMBEDDING_DIM
+        ).to(config.DEVICE)
+    else:
+        model = DentalBoundaryDGCNN(
+            k=config.K_NEIGHBORS,
+            num_classes=config.NUM_CLASSES,
+            embed_dim=config.EMBEDDING_DIM
+        ).to(config.DEVICE)
 
     # model.compile()  # Optional: Use PyTorch 2.0 compilation for potential speedup
 
@@ -163,12 +189,13 @@ def train():
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=config.LR, weight_decay=config.WEIGHT_DECAY)
 
-    warmup = LinearLR(optimizer, start_factor=0.1,
-                      end_factor=1.0, total_iters=10)
-    cosine = CosineAnnealingLR(
-        optimizer, T_max=config.EPOCHS - 10, eta_min=1e-6)
-    scheduler = SequentialLR(optimizer, schedulers=[
-                             warmup, cosine], milestones=[10])
+    # T_max is the number of steps to reach the minimum LR (usually set to total epochs)
+    # eta_min is the lowest the learning rate will go (e.g., 1e-6)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=config.EPOCHS,
+        eta_min=1e-6
+    )
     best_val_loss = float('inf')
 
     for epoch in range(1, config.EPOCHS + 1):
@@ -178,10 +205,15 @@ def train():
         for batch in tqdm(train_loader, desc=f"Epoch {epoch}"):
             batch = batch.to(config.DEVICE)
             optimizer.zero_grad()
-            logits = model(batch)
-            # loss = F.cross_entropy(logits, batch.y - 1)
-            loss = combined_loss(
-                logits, batch.y - 1, num_classes=config.NUM_CLASSES)
+            if model_type == 0:
+                logits = model(batch)
+                # loss = F.cross_entropy(logits, batch.y - 1)
+                loss = combined_loss(
+                    logits, batch.y - 1, num_classes=config.NUM_CLASSES)
+            else:
+                logits, boundary_logits, boundary_score = model(batch)
+                loss = boundary_loss(
+                    logits, boundary_logits, boundary_score, batch.y - 1, num_classes=config.NUM_CLASSES)
             loss.backward()
             optimizer.step()
             total_train_loss += loss.item()
