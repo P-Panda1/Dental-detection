@@ -117,7 +117,7 @@ def get_dental_loaders(data_path, batch_size=2, num_points=8192):
         MolarBandExpansion(),
         IncisalArchExpansion(),
         JawShear(),
-        InterMolarGapStretch()
+        InterMolarGapStretch(),
         NormalizeScale(),
         FixedPoints(num_points),
         ComputeNormalsFromPos(k=10),   # normals in final aligned+sampled space
