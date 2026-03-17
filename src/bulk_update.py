@@ -8,7 +8,7 @@ from torch_cluster import knn
 from torch_geometric.data import Data
 from torch_geometric.transforms import NormalizeScale
 
-from model import DentalMetricDGCNN
+from model import DentalMetricDGCNN, DentalBoundaryDGCNN
 from config import config
 from transformations import RobustCanonicalAlignment
 
@@ -17,12 +17,21 @@ def bulk_label_data(input_dir="../data/unlabeled", output_dir="../data/labeled")
     device = config.DEVICE
     os.makedirs(output_dir, exist_ok=True)
 
+    model_type = 1  # 0 for MetricDGCNN, 1 for BoundaryDGCNN
+
     # 1. Load model
-    model = DentalMetricDGCNN(
-        k=config.K_NEIGHBORS,
-        num_classes=config.NUM_CLASSES,
-        embed_dim=config.EMBEDDING_DIM
-    ).to(device)
+    if model_type == 0:
+        model = DentalMetricDGCNN(
+            k=config.K_NEIGHBORS,
+            num_classes=config.NUM_CLASSES,
+            embed_dim=config.EMBEDDING_DIM
+        ).to(device)
+    else:
+        model = DentalBoundaryDGCNN(
+            k=config.K_NEIGHBORS,
+            num_classes=config.NUM_CLASSES,
+            embed_dim=config.EMBEDDING_DIM
+        ).to(device)
 
     checkpoint_path = os.path.join(config.CHECKPOINT_DIR, "best_model.pth")
     if not os.path.exists(checkpoint_path):
