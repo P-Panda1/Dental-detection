@@ -225,3 +225,184 @@ class RandomBlobRemoval:
             return data
 
         return data.subgraph(keep_indices)
+
+
+class MolarBandExpansion(BaseTransform):
+    """
+    Expands or contracts the molar regions outward along the X axis.
+    After PCA alignment, molars sit at negative Y. We find the molar band
+    and push those points outward from the jaw centerline.
+    """
+
+    def __init__(self, scale_range=(0.9, 1.1), band_y_max=-0.15, p=0.8):
+        super().__init__()
+        self.scale_range = scale_range
+        self.band_y_max = band_y_max   # points below this Y are molars
+        self.p = p
+
+    def forward(self, data):
+        if torch.rand(1).item() > self.p:
+            return data
+
+        pos = data.pos.clone()
+        scale = torch.empty(1).uniform_(*self.scale_range).item()
+
+        # Randomize the band cutoff slightly so the model doesn't memorize
+        # a hard boundary
+        band_limit = self.band_y_max + \
+            torch.empty(1).uniform_(-0.08, 0.08).item()
+        molar_mask = pos[:, 1] < band_limit
+
+        if molar_mask.sum() < 10:
+            return data
+
+        # Expand outward from X=0 (jaw centerline after PCA)
+        # Points on the left go further left, right go further right
+        pos[molar_mask, 0] *= scale
+
+        # Soft blend at the boundary to avoid a hard seam
+        # Points near the band_limit get partial influence
+        near_mask = (pos[:, 1] >= band_limit) & (pos[:, 1] < band_limit + 0.1)
+        if near_mask.sum() > 0:
+            blend = (band_limit + 0.1 - pos[near_mask, 1]) / 0.1  # 0→1
+            pos[near_mask, 0] *= (1.0 + blend * (scale - 1.0))
+
+        data.pos = pos
+        return data
+
+
+class IncisalArchExpansion(BaseTransform):
+    """
+    Expands or contracts the incisor arch — the front teeth region.
+    After PCA alignment, incisors sit at positive Y.
+    We push them forward/backward along Y and optionally fan them
+    outward along X to simulate different arch widths.
+    """
+
+    def __init__(self, y_scale_range=(0.9, 1.1),
+                 x_fan_range=(0.9, 1.1),
+                 band_y_min=0.2, p=0.8):
+        super().__init__()
+        self.y_scale_range = y_scale_range
+        self.x_fan_range = x_fan_range
+        self.band_y_min = band_y_min   # points above this Y are incisors
+        self.p = p
+
+    def forward(self, data):
+        if torch.rand(1).item() > self.p:
+            return data
+
+        pos = data.pos.clone()
+        y_scale = torch.empty(1).uniform_(*self.y_scale_range).item()
+        x_fan = torch.empty(1).uniform_(*self.x_fan_range).item()
+
+        band_limit = self.band_y_min + \
+            torch.empty(1).uniform_(-0.08, 0.08).item()
+        incisor_mask = pos[:, 1] > band_limit
+
+        if incisor_mask.sum() < 10:
+            return data
+
+        # Push incisors forward/backward (protrusion/retrusion)
+        pos[incisor_mask, 1] *= y_scale
+
+        # Fan outward from centerline — simulates wide vs narrow arch
+        pos[incisor_mask, 0] *= x_fan
+
+        # Soft blend at boundary
+        near_mask = (pos[:, 1] <= band_limit) & (pos[:, 1] > band_limit - 0.1)
+        if near_mask.sum() > 0:
+            blend = (pos[near_mask, 1] - (band_limit - 0.1)) / 0.1
+            pos[near_mask, 1] *= (1.0 + blend * (y_scale - 1.0))
+            pos[near_mask, 0] *= (1.0 + blend * (x_fan - 1.0))
+
+        data.pos = pos
+        return data
+
+
+class JawShear(BaseTransform):
+    """
+    Applies a shear transform to simulate different jaw opening angles
+    and asymmetric jaw shapes. Two modes:
+
+    - 'lateral': tilts the jaw sideways (one side higher than other)
+      simulates asymmetric bite / crossbite
+    - 'sagittal': tilts front-to-back (overbite / underbite geometry)
+      simulates different vertical jaw relationships
+    """
+
+    def __init__(self, shear_range=(-0.1, 0.1), mode='both', p=0.8):
+        super().__init__()
+        self.shear_range = shear_range
+        self.mode = mode   # 'lateral', 'sagittal', or 'both'
+        self.p = p
+
+    def forward(self, data):
+        if torch.rand(1).item() > self.p:
+            return data
+
+        pos = data.pos.clone()
+
+        if self.mode in ('lateral', 'both'):
+            # Lateral shear: Z shifts proportionally to X
+            # Simulates one side of jaw being higher
+            shear_xz = torch.empty(1).uniform_(*self.shear_range).item()
+            pos[:, 2] += shear_xz * pos[:, 0]
+
+        if self.mode in ('sagittal', 'both'):
+            # Sagittal shear: Z shifts proportionally to Y
+            # Simulates overbite / underbite angle
+            shear_yz = torch.empty(1).uniform_(*self.shear_range).item()
+            pos[:, 2] += shear_yz * pos[:, 1]
+
+        # Re-center Z after shear so NormalizeScale isn't thrown off
+        pos[:, 2] -= pos[:, 2].mean()
+
+        data.pos = pos
+        return data
+
+
+class InterMolarGapStretch(BaseTransform):
+    """
+    Stretches or compresses the gap between the left and right molar
+    regions independently. Simulates different jaw widths where one
+    side may be wider than the other (asymmetric arch).
+    """
+
+    def __init__(self, left_scale_range=(0.9, 1.1),
+                 right_scale_range=(0.9, 1.1),
+                 p=0.8):
+        super().__init__()
+        self.left_scale_range = left_scale_range
+        self.right_scale_range = right_scale_range
+        self.p = p
+
+    def forward(self, data):
+        if torch.rand(1).item() > self.p:
+            return data
+
+        pos = data.pos.clone()
+        left_scale = torch.empty(1).uniform_(*self.left_scale_range).item()
+        right_scale = torch.empty(1).uniform_(*self.right_scale_range).item()
+
+        # After PCA, X<0 = left side, X>0 = right side
+        left_mask = pos[:, 0] < 0
+        right_mask = pos[:, 0] > 0
+
+        # Scale X distance from centerline independently per side
+        pos[left_mask,  0] *= left_scale
+        pos[right_mask, 0] *= right_scale
+
+        # Soft blend near X=0 to avoid seam
+        near_mask = (pos[:, 0].abs() < 0.05)
+        if near_mask.sum() > 0:
+            blend = pos[near_mask, 0].abs() / 0.05   # 0 at center, 1 at edge
+            scale_interp = torch.where(
+                pos[near_mask, 0] < 0,
+                torch.full_like(blend, left_scale),
+                torch.full_like(blend, right_scale)
+            )
+            pos[near_mask, 0] *= (1.0 + blend * (scale_interp - 1.0))
+
+        data.pos = pos
+        return data

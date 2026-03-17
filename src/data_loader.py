@@ -9,9 +9,10 @@ from torch.utils.data import random_split
 
 from transformations import (
     RobustCanonicalAlignment,
-    RandomizedDentalBandStretch,
-    AnatomicalDentalStretch,
-    RandomBlobRemoval
+    MolarBandExpansion,
+    IncisalArchExpansion,
+    JawShear,
+    InterMolarGapStretch
 )
 
 
@@ -113,11 +114,10 @@ def get_dental_loaders(data_path, batch_size=2, num_points=8192):
 
     train_transform = Compose([
         RobustCanonicalAlignment(),
-        AnatomicalDentalStretch(),
-        RandomBlobRemoval(num_blobs=10, radius=0.05, p=0.8),
-        RandomBlobRemoval(num_blobs=3,  radius=0.1,  p=0.8),
-        RandomBlobRemoval(num_blobs=2,  radius=0.3,  p=0.8),
-        RandomBlobRemoval(num_blobs=1,  radius=0.4,  p=0.8),
+        MolarBandExpansion(),
+        IncisalArchExpansion(),
+        JawShear(),
+        InterMolarGapStretch()
         NormalizeScale(),
         FixedPoints(num_points),
         ComputeNormalsFromPos(k=10),   # normals in final aligned+sampled space
