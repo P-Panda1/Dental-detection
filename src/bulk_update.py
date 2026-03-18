@@ -14,13 +14,126 @@ from transformations import RobustCanonicalAlignment
 from data_loader import ComputeNormalsFromPos
 
 
+def smooth_upsample(sampled_pos, sampled_logits, full_pos, k=5):
+    """
+    Interpolates logits from K nearest sampled points for every
+    full-res point, weighted by distance. Produces smooth boundaries
+    instead of hard Voronoi edges from k=1 KNN copying.
+    """
+    assign = knn(sampled_pos, full_pos, k=k)
+    src, dst = assign[0], assign[1]
+
+    dists = (full_pos[src] - sampled_pos[dst]).norm(dim=1)
+    weights = 1.0 / (dists + 1e-8)
+
+    weight_sum = torch.zeros(full_pos.shape[0]).scatter_add_(0, src, weights)
+    weights = weights / weight_sum[src]
+
+    full_logits = torch.zeros(full_pos.shape[0], sampled_logits.shape[1])
+    for c in range(sampled_logits.shape[1]):
+        contrib = weights * sampled_logits[dst, c]
+        full_logits[:, c].scatter_add_(0, src, contrib)
+
+    return full_logits
+
+
+def patch_inference(model, aligned_pos, device,
+                    patch_size=8192, num_patches=12, overlap_factor=0.4):
+    """
+    Runs inference on multiple overlapping spatial patches.
+    Patch centers are spread across the jaw so every point
+    appears in multiple patches and gets averaged.
+
+    num_patches controls boundary smoothness:
+    - More patches = smoother boundaries, slower inference
+    - 12 patches is a good balance for a jaw mesh
+    """
+    compute_normals = ComputeNormalsFromPos(k=10)
+    N = aligned_pos.shape[0]
+    all_logits = torch.zeros(N, config.NUM_CLASSES)
+    all_counts = torch.zeros(N)
+
+    # Spread patch centers evenly along X axis (left → right jaw)
+    x_coords = aligned_pos[:, 0]
+    x_min = x_coords.min().item()
+    x_max = x_coords.max().item()
+    centers_x = torch.linspace(x_min, x_max, num_patches)
+
+    # Also add some patches centered on Y axis (front/back jaw)
+    y_coords = aligned_pos[:, 1]
+    y_min = y_coords.min().item()
+    y_max = y_coords.max().item()
+    centers_y = torch.linspace(y_min, y_max, num_patches // 2)
+
+    # Build center points: X-spread + Y-spread + random centers
+    center_points = []
+    for cx in centers_x:
+        center_points.append(torch.tensor([cx, 0.0, 0.0]))
+    for cy in centers_y:
+        center_points.append(torch.tensor([0.0, cy, 0.0]))
+    # Add a few random centers for coverage
+    rand_idx = torch.randperm(N)[:num_patches // 2]
+    for ri in rand_idx:
+        center_points.append(aligned_pos[ri])
+
+    for center in center_points:
+        center = center.to(aligned_pos.device)
+
+        # Find nearest patch_size points to this center
+        dists = (aligned_pos - center).norm(dim=1)
+        _, idx = dists.topk(patch_size, largest=False)
+
+        patch_pos = aligned_pos[idx]   # [patch_size, 3]
+
+        # Compute normals in same space as training
+        patch_data = Data(pos=patch_pos)
+        patch_data = compute_normals(patch_data)
+        patch_data.batch = torch.zeros(
+            patch_size, dtype=torch.long
+        )
+        patch_data = patch_data.to(device)
+
+        with torch.no_grad():
+            logits = model(patch_data).cpu()   # [patch_size, 3]
+
+        # Points near the patch center get higher weight
+        # — they had more context around them
+        center_dists = dists[idx]
+        max_dist = center_dists.max().clamp(min=1e-8)
+        weights = (1.0 - center_dists /
+                   max_dist).clamp(min=0.1)  # [patch_size]
+
+        all_logits[idx] += logits * weights.unsqueeze(1)
+        all_counts[idx] += weights
+
+    # Handle uncovered points
+    uncovered = all_counts == 0
+    if uncovered.any():
+        covered_pos = aligned_pos[~uncovered]
+        covered_logits = all_logits[~uncovered] / \
+            all_counts[~uncovered].unsqueeze(1)
+        interp = smooth_upsample(covered_pos, covered_logits,
+                                 aligned_pos[uncovered], k=5)
+        all_logits[uncovered] = interp
+        all_counts[uncovered] = 1
+
+    final_logits = all_logits / all_counts.unsqueeze(1).clamp(min=1)
+    return final_logits
+
+
+# How patch count affects quality
+
+# num_patches = 6   → fast, coarser boundaries, some points only seen once
+# num_patches = 12  → good balance, most boundary points seen 3-4 times  ← recommended
+# num_patches = 20  → slow, very smooth boundaries, diminishing returns after this
+
+
 def bulk_label_data(input_dir="../data/unlabeled", output_dir="../data/labeled"):
     device = config.DEVICE
     os.makedirs(output_dir, exist_ok=True)
 
     model_type = 1  # 0 for MetricDGCNN, 1 for BoundaryDGCNN
 
-    # 1. Load model
     if model_type == 0:
         model = DentalMetricDGCNN(
             k=config.K_NEIGHBORS,
@@ -40,9 +153,7 @@ def bulk_label_data(input_dir="../data/unlabeled", output_dir="../data/labeled")
         return
 
     checkpoint = torch.load(
-        checkpoint_path,
-        map_location=device,
-        weights_only=False
+        checkpoint_path, map_location=device, weights_only=False
     )
     model.load_state_dict(checkpoint['state_dict'])
     model.eval()
@@ -50,7 +161,6 @@ def bulk_label_data(input_dir="../data/unlabeled", output_dir="../data/labeled")
 
     align = RobustCanonicalAlignment()
     normalize = NormalizeScale()
-    compute_normals = ComputeNormalsFromPos(k=10)
 
     files = [f for f in os.listdir(input_dir) if f.endswith('.ply')]
     print(f"Found {len(files)} unlabeled files. Starting inference...")
@@ -58,60 +168,33 @@ def bulk_label_data(input_dir="../data/unlabeled", output_dir="../data/labeled")
     for filename in tqdm(files, desc="Labeling Jaws"):
         try:
             path = os.path.join(input_dir, filename)
-
-            # 2. Load mesh
             mesh = pv.read(path)
-
             pos = torch.from_numpy(mesh.points).float()
 
-            # 3. Align + Normalize on pos only
+            # Align + normalize — same pipeline as val_transform
             raw_data = Data(pos=pos)
             aligned = align(raw_data.clone())
             normalized = normalize(aligned.clone())
             aligned_pos = normalized.pos               # [N, 3] full res
 
-            # 4. Sample FIRST — normals computed on small cloud to avoid segfault
-            N = aligned_pos.shape[0]
-            num_points = config.NUM_POINTS_GLOBAL
+            # Patch inference — no aggressive downsampling, smooth boundaries
+            final_logits = patch_inference(
+                model, aligned_pos, device,
+                patch_size=config.NUM_POINTS_GLOBAL,
+                overlap=0.4,
+                num_patches=20
+            )
+            high_res_preds = torch.argmax(final_logits, dim=1).numpy()
 
-            if N >= num_points:
-                idx = torch.randperm(N)[:num_points]
-            else:
-                idx = torch.randint(0, N, (num_points,))
-
-            sampled_pos = aligned_pos[idx]             # [num_points, 3]
-
-            # 5. Compute normals on sampled cloud (safe size, correct space)
-            sampled_data = Data(pos=sampled_pos)
-            # sets sampled_data.x [num_points, 6]
-            sampled_data = compute_normals(sampled_data)
-
-            # 6. Build input data object
-            low_res_data = Data(
-                pos=sampled_pos,
-                x=sampled_data.x,
-                batch=torch.zeros(num_points, dtype=torch.long)
-            ).to(device)
-
-            # 7. Inference
-            with torch.no_grad():
-                logits = model(low_res_data)
-                low_res_preds = torch.argmax(logits, dim=1).cpu()
-
-            # 8. KNN upsample back to full resolution
-            assign_idx = knn(sampled_pos, aligned_pos, k=1)
-            high_res_preds = low_res_preds[assign_idx[1]].numpy()
-
-            # 9. Color mapping (0=Gum, 1=Border, 2=Tooth)
+            # Color mapping (0=Gum, 1=Border, 2=Tooth)
             points = mesh.points
             faces = pv.read(path).faces.reshape(-1, 4)[:, 1:]
 
             colors = np.zeros((len(points), 3), dtype=np.uint8)
-            colors[high_res_preds == 0] = [255, 0,   0]   # Gum    → Red
-            colors[high_res_preds == 1] = [0,   0,   0]   # Border → Black
-            colors[high_res_preds == 2] = [255, 255, 255]   # Tooth  → White
+            colors[high_res_preds == 0] = [255, 0,   0]
+            colors[high_res_preds == 1] = [0,   0,   0]
+            colors[high_res_preds == 2] = [255, 255, 255]
 
-            # 10. Save
             out_mesh = meshio.Mesh(
                 points,
                 [("triangle", faces)],

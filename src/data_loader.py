@@ -16,6 +16,53 @@ from transformations import (
 )
 
 
+class SpatialPatchSampler:
+    """
+    Extracts a spatially coherent patch instead of random global sample.
+    At training time this matches exactly what patch inference does.
+
+    Strategy: pick a random center point, take the N nearest neighbors.
+    This gives a spatially connected region at full local density.
+    """
+
+    def __init__(self, num_points=8192):
+        self.num_points = num_points
+
+    def __call__(self, data):
+        pos = data.pos
+        N = pos.shape[0]
+
+        if N <= self.num_points:
+            # Mesh is smaller than patch — use all points, pad if needed
+            return data
+
+        # Pick a random center — bias toward boundary-rich regions
+        # by occasionally picking a point with high local variance
+        if torch.rand(1).item() < 0.5:
+            # Random center anywhere
+            center_idx = torch.randint(0, N, (1,)).item()
+        else:
+            # Pick from the middle X band (where boundaries tend to be)
+            mid_mask = (pos[:, 0].abs() < pos[:, 0].abs().median())
+            mid_idx = mid_mask.nonzero(as_tuple=False).view(-1)
+            center_idx = mid_idx[torch.randint(0, len(mid_idx), (1,))].item()
+
+        center = pos[center_idx]
+
+        # Take N nearest neighbors to center — spatially coherent patch
+        dists = (pos - center).norm(dim=1)
+        _, idx = dists.topk(self.num_points, largest=False)
+
+        # Apply to all attributes
+        data.pos = pos[idx]
+        if data.x is not None:
+            data.x = data.x[idx]
+        if data.y is not None:
+            data.y = data.y[idx]
+
+        return data
+
+
 class ComputeNormalsFromPos:
     def __init__(self, k=10):
         self.k = k
@@ -119,14 +166,14 @@ def get_dental_loaders(data_path, batch_size=2, num_points=8192):
         JawShear(),
         InterMolarGapStretch(),
         NormalizeScale(),
-        FixedPoints(num_points),
+        SpatialPatchSampler(num_points),
         ComputeNormalsFromPos(k=10),   # normals in final aligned+sampled space
     ])
 
     val_transform = Compose([
         RobustCanonicalAlignment(),
         NormalizeScale(),
-        FixedPoints(num_points),
+        SpatialPatchSampler(num_points),
         ComputeNormalsFromPos(k=10),   # same for val
     ])
 

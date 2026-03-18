@@ -19,7 +19,7 @@ class DentalActiveConfig:
     LOSS_WEIGHTS = torch.tensor([1.0, 12.0, 2.0]).to(DEVICE)
 
     # --- Model Selection (DGCNN) ---
-    NUM_POINTS_GLOBAL = 8192
+    NUM_POINTS_GLOBAL = 16384
     K_NEIGHBORS = 20
     EMBEDDING_DIM = 1024
 

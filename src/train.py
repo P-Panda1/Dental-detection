@@ -160,7 +160,7 @@ def boundary_loss(logits, boundary_logits, boundary_score, labels, num_classes=3
 def train():
     clear_gpu()
     train_loader, val_loader, _ = get_dental_loaders(
-        "../data", batch_size=config.BATCH_SIZE)
+        "../data", batch_size=config.BATCH_SIZE, num_points=config.NUM_POINTS_GLOBAL)
 
     model_type = 1
 
