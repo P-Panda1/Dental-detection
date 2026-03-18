@@ -226,7 +226,7 @@ def train():
 
     # T_max is the number of steps to reach the minimum LR (usually set to total epochs)
     # eta_min is the lowest the learning rate will go (e.g., 1e-6)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+    scheduler = CosineAnnealingLR(
         optimizer,
         T_max=config.EPOCHS,
         eta_min=1e-6
