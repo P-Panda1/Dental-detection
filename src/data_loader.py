@@ -95,6 +95,65 @@ class ComputeNormalsFromPos:
         return data
 
 
+def clean_labels(pos, y, k=20):
+    """
+    Two passes:
+    1. Majority vote — each point takes the most common label
+       among its K nearest neighbors. Removes isolated streaks.
+    2. Border enforcement — any point where red and white are
+       direct neighbors gets relabeled to black (border).
+       Enforces the anatomical rule that gum never touches tooth.
+    """
+    N = pos.shape[0]
+    batch = torch.zeros(N, dtype=torch.long)
+
+    # ── Pass 1: Majority vote to remove streaks ──────────────────────
+    edge_index = knn(pos, pos, k=k, batch_x=batch, batch_y=batch)
+    src, dst = edge_index[0], edge_index[1]
+
+    # Count votes per class for each point
+    clean_y = y.clone()
+    for c in range(3):
+        votes = (y[src] == (c + 1)).float()   # y is 1-indexed
+        vote_count = torch.zeros(N).scatter_add_(0, dst, votes)
+        # Only relabel if this class has a strong majority (>60%)
+        majority = vote_count / k
+        strong_majority = majority > 0.6
+        clean_y[strong_majority] = c + 1
+
+    # ── Pass 2: Border enforcement ───────────────────────────────────
+    # Find any point where a red neighbor and white neighbor coexist
+    # That point and its ambiguous neighbors become border (black=2)
+    has_red_neighbor = torch.zeros(N, dtype=torch.bool)
+    has_white_neighbor = torch.zeros(N, dtype=torch.bool)
+
+    is_red = (clean_y == 1)   # gum
+    is_white = (clean_y == 3)   # tooth
+
+    # Scatter neighbor labels to each point
+    red_signal = is_red[src].float()
+    white_signal = is_white[src].float()
+
+    red_count = torch.zeros(N).scatter_add_(0, dst, red_signal)
+    white_count = torch.zeros(N).scatter_add_(0, dst, white_signal)
+
+    has_red_neighbor = red_count > 0
+    has_white_neighbor = white_count > 0
+
+    # Points that have BOTH red and white neighbors are on the border
+    # Force them to black regardless of their current label
+    conflict_mask = has_red_neighbor & has_white_neighbor
+    clean_y[conflict_mask] = 2   # border (black)
+
+    # Also force any red point that directly touches white to border
+    is_red_touching_white = is_red & has_white_neighbor
+    is_white_touching_red = is_white & has_red_neighbor
+    clean_y[is_red_touching_white] = 2
+    clean_y[is_white_touching_red] = 2
+
+    return clean_y
+
+
 class DentalDataset(Dataset):
     def __init__(self, root, transform=None):
         super().__init__(root, transform)
@@ -139,7 +198,9 @@ class DentalDataset(Dataset):
         elif unknown_mask.all():
             y = torch.ones(len(pos), dtype=torch.long)
 
-        # No x here — normals computed AFTER alignment in the transform pipeline
+        # After KNN label propagation for unknown points...
+        y = clean_labels(pos, y, k=20)
+
         return Data(pos=pos, y=y)
 
 

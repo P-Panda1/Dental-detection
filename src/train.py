@@ -134,27 +134,61 @@ def combined_loss(logits, labels, num_classes=3, dice_weight=0.5):
     return ce + dice_weight * dice
 
 
-def boundary_loss(logits, boundary_logits, boundary_score, labels, num_classes=3):
-    # Main segmentation loss
+def topology_loss(logits, pos, batch, k=10):
+    """
+    Penalizes any prediction where gum (class 0) and tooth (class 2)
+    are direct geometric neighbors without border (class 1) between them.
+    Uses soft probabilities so it's differentiable.
+    """
+    probs = torch.softmax(logits, dim=1)   # [N, 3]
+    p_gum = probs[:, 0]                    # prob of gum
+    p_tooth = probs[:, 2]                    # prob of tooth
+
+    edge_index = knn(pos, pos, k=k,
+                     batch_x=batch, batch_y=batch)
+    src, dst = edge_index[0], edge_index[1]
+
+    # For each point, get max gum and tooth probability among neighbors
+    neighbor_gum_prob = p_gum[src]
+    neighbor_tooth_prob = p_tooth[src]
+
+    max_neighbor_gum = torch.zeros_like(p_gum).scatter_reduce_(
+        0, dst, neighbor_gum_prob, reduce='amax', include_self=False
+    )
+    max_neighbor_tooth = torch.zeros_like(p_tooth).scatter_reduce_(
+        0, dst, neighbor_tooth_prob, reduce='amax', include_self=False
+    )
+
+    # Conflict score: high when a point's neighborhood has both
+    # high gum and high tooth probability
+    conflict = max_neighbor_gum * max_neighbor_tooth   # [N]
+
+    # Penalize conflicts — this pushes the model to insert border
+    # between gum and tooth regions
+    penalty = (conflict * p_gum).mean() + (conflict * p_tooth).mean()
+    return penalty
+
+
+def boundary_loss(logits, boundary_logits, boundary_score,
+                  labels, pos, batch, num_classes=3):
     ce = balanced_mean_loss(logits, labels, num_classes)
     dice = dice_loss(logits, labels, num_classes)
 
-    # Auxiliary boundary loss — weighted higher for border class points
-    # This forces the model to get boundaries right independently
-    border_mask = (labels == 1).float()                 # 1 where border
-    border_weight = 1.0 + 4.0 * border_mask              # border points weighted 5×
+    border_mask = (labels == 1).float()
+    border_weight = 1.0 + 4.0 * border_mask
     aux_loss = F.cross_entropy(
         boundary_logits, labels, reduction='none'
     )
     aux_loss = (aux_loss * border_weight).mean()
 
-    # Boundary consistency: boundary_score should be HIGH near border class
-    # This is a soft supervision signal
     with torch.no_grad():
         target_score = border_mask.unsqueeze(1)
     consistency = F.binary_cross_entropy(boundary_score, target_score)
 
-    return ce + 0.3 * dice + 0.4 * aux_loss + 0.1 * consistency
+    # Topology term — enforces gum never touches tooth
+    topo = topology_loss(logits, pos, batch, k=10)
+
+    return ce + 0.3 * dice + 0.4 * aux_loss + 0.1 * consistency + 0.2 * topo
 
 
 def train():
@@ -162,7 +196,7 @@ def train():
     train_loader, val_loader, _ = get_dental_loaders(
         "../data", batch_size=config.BATCH_SIZE, num_points=config.NUM_POINTS_GLOBAL)
 
-    model_type = 0
+    model_type = 1
 
     if model_type == 0:
         model = DentalMetricDGCNN(
@@ -213,7 +247,10 @@ def train():
             else:
                 logits, boundary_logits, boundary_score = model(batch)
                 loss = boundary_loss(
-                    logits, boundary_logits, boundary_score, batch.y - 1, num_classes=config.NUM_CLASSES)
+                    logits, boundary_logits, boundary_score,
+                    batch.y - 1, batch.pos, batch.batch,
+                    num_classes=config.NUM_CLASSES
+                )
             loss.backward()
             optimizer.step()
             total_train_loss += loss.item()

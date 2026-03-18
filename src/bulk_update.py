@@ -131,12 +131,48 @@ def patch_inference(model, aligned_pos, device,
 # num_patches = 12  → good balance, most boundary points seen 3-4 times  ← recommended
 # num_patches = 20  → slow, very smooth boundaries, diminishing returns after this
 
+def enforce_border_rule(pos, preds, k=10):
+    """
+    Post-processing: any predicted point where gum (0) and tooth (2)
+    are direct neighbors gets forced to border (1).
+    Run this on model predictions before saving the mesh.
+    """
+    N = pos.shape[0]
+    batch = torch.zeros(N, dtype=torch.long)
+
+    edge_index = knn(pos, pos, k=k, batch_x=batch, batch_y=batch)
+    src, dst = edge_index[0], edge_index[1]
+
+    is_gum = (preds == 0)
+    is_tooth = (preds == 2)
+
+    gum_count = torch.zeros(N).scatter_add_(
+        0, dst, is_gum[src].float()
+    )
+    tooth_count = torch.zeros(N).scatter_add_(
+        0, dst, is_tooth[src].float()
+    )
+
+    conflict = (gum_count > 0) & (tooth_count > 0)
+    refined = preds.clone()
+    refined[conflict] = 1   # force border
+
+    # Second pass — majority vote to smooth remaining noise
+    for _ in range(2):
+        for c in range(3):
+            votes = (refined[src] == c).float()
+            vote_count = torch.zeros(N).scatter_add_(0, dst, votes)
+            majority = vote_count / k
+            refined[majority > 0.7] = c
+
+    return refined
+
 
 def bulk_label_data(input_dir="../data/unlabeled", output_dir="../data/labeled"):
     device = config.DEVICE
     os.makedirs(output_dir, exist_ok=True)
 
-    model_type = 0  # 0 for MetricDGCNN, 1 for BoundaryDGCNN
+    model_type = 1  # 0 for MetricDGCNN, 1 for BoundaryDGCNN
 
     if model_type == 0:
         model = DentalMetricDGCNN(
@@ -187,7 +223,12 @@ def bulk_label_data(input_dir="../data/unlabeled", output_dir="../data/labeled")
                 patch_size=config.NUM_POINTS_GLOBAL,
                 num_patches=16   # 12 overlap patches on top of full coverage is plenty
             )
-            high_res_preds = torch.argmax(final_logits, dim=1).numpy()
+            raw_preds = torch.argmax(final_logits, dim=1)
+
+            # Enforce anatomical rule: gum never touches tooth
+            high_res_preds = enforce_border_rule(
+                aligned_pos, raw_preds, k=10
+            ).numpy()
 
             # Color mapping (0=Gum, 1=Border, 2=Tooth)
             points = mesh.points

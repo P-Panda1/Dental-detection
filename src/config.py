@@ -25,7 +25,7 @@ class DentalActiveConfig:
 
     # --- Training ---
     BATCH_SIZE = 8
-    LR = 5e-5
+    LR = 1e-4
     WEIGHT_DECAY = 1e-4
     EPOCHS = 10000
 
