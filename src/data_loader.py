@@ -199,7 +199,7 @@ def get_dental_loaders(data_path, batch_size=2, num_points=8192):
         train_set,
         batch_size=batch_size,
         sampler=RandomSampler(train_set, num_samples=len(
-            train_set) * 4, replacement=True),
+            train_set) * 2, replacement=True),
         drop_last=True
     )
     val_loader = DataLoader(val_set,   batch_size=1,
