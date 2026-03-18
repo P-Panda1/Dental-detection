@@ -136,7 +136,7 @@ def bulk_label_data(input_dir="../data/unlabeled", output_dir="../data/labeled")
     device = config.DEVICE
     os.makedirs(output_dir, exist_ok=True)
 
-    model_type = 1  # 0 for MetricDGCNN, 1 for BoundaryDGCNN
+    model_type = 0  # 0 for MetricDGCNN, 1 for BoundaryDGCNN
 
     if model_type == 0:
         model = DentalMetricDGCNN(

@@ -162,7 +162,7 @@ def train():
     train_loader, val_loader, _ = get_dental_loaders(
         "../data", batch_size=config.BATCH_SIZE, num_points=config.NUM_POINTS_GLOBAL)
 
-    model_type = 1
+    model_type = 0
 
     if model_type == 0:
         model = DentalMetricDGCNN(
