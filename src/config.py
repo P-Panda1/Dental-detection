@@ -24,7 +24,7 @@ class DentalActiveConfig:
     EMBEDDING_DIM = 1024
 
     # --- Training ---
-    BATCH_SIZE = 2
+    BATCH_SIZE = 8
     LR = 5e-6
     WEIGHT_DECAY = 1e-4
     EPOCHS = 10000
