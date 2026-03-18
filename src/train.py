@@ -9,6 +9,7 @@ import pyvista as pv
 import numpy as np
 import os
 from tqdm import tqdm
+from torch_cluster import knn
 
 # Import custom modules
 from config import config
