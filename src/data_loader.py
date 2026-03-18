@@ -6,6 +6,7 @@ from torch_geometric.loader import DataLoader
 from torch_geometric.transforms import Compose, NormalizeScale, FixedPoints
 from torch_cluster import knn
 from torch.utils.data import random_split
+from torch.utils.data import RandomSampler
 
 from transformations import (
     RobustCanonicalAlignment,
@@ -194,8 +195,13 @@ def get_dental_loaders(data_path, batch_size=2, num_points=8192):
     train_set = TransformSubset(train_subset, transform=train_transform)
     val_set = TransformSubset(val_subset,   transform=val_transform)
 
-    train_loader = DataLoader(train_set, batch_size=batch_size,
-                              shuffle=True,  drop_last=True)
+    train_loader = DataLoader(
+        train_set,
+        batch_size=batch_size,
+        sampler=RandomSampler(train_set, num_samples=len(
+            train_set) * 4, replacement=True),
+        drop_last=True
+    )
     val_loader = DataLoader(val_set,   batch_size=1,
                             shuffle=False, drop_last=False)
 

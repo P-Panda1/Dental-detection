@@ -38,86 +38,90 @@ def smooth_upsample(sampled_pos, sampled_logits, full_pos, k=5):
 
 
 def patch_inference(model, aligned_pos, device,
-                    patch_size=8192, num_patches=12, overlap_factor=0.4):
-    """
-    Runs inference on multiple overlapping spatial patches.
-    Patch centers are spread across the jaw so every point
-    appears in multiple patches and gets averaged.
-
-    num_patches controls boundary smoothness:
-    - More patches = smoother boundaries, slower inference
-    - 12 patches is a good balance for a jaw mesh
-    """
+                    patch_size=8192, num_patches=12):
     compute_normals = ComputeNormalsFromPos(k=10)
     N = aligned_pos.shape[0]
     all_logits = torch.zeros(N, config.NUM_CLASSES)
     all_counts = torch.zeros(N)
 
-    # Spread patch centers evenly along X axis (left → right jaw)
-    x_coords = aligned_pos[:, 0]
-    x_min = x_coords.min().item()
-    x_max = x_coords.max().item()
-    centers_x = torch.linspace(x_min, x_max, num_patches)
+    # ── Step 1: Deterministic coverage pass ─────────────────────────
+    # Divide ALL points into non-overlapping chunks first.
+    # This guarantees every single point is seen at least once
+    # before we add any overlap patches.
+    shuffled_idx = torch.randperm(N)
+    chunks = shuffled_idx.split(patch_size)
 
-    # Also add some patches centered on Y axis (front/back jaw)
-    y_coords = aligned_pos[:, 1]
-    y_min = y_coords.min().item()
-    y_max = y_coords.max().item()
-    centers_y = torch.linspace(y_min, y_max, num_patches // 2)
+    for chunk_idx in chunks:
+        # Pad last chunk if smaller than patch_size
+        if len(chunk_idx) < patch_size:
+            pad = torch.randint(0, N, (patch_size - len(chunk_idx),))
+            chunk_idx = torch.cat([chunk_idx, pad])
 
-    # Build center points: X-spread + Y-spread + random centers
-    center_points = []
-    for cx in centers_x:
-        center_points.append(torch.tensor([cx, 0.0, 0.0]))
-    for cy in centers_y:
-        center_points.append(torch.tensor([0.0, cy, 0.0]))
-    # Add a few random centers for coverage
-    rand_idx = torch.randperm(N)[:num_patches // 2]
-    for ri in rand_idx:
-        center_points.append(aligned_pos[ri])
-
-    for center in center_points:
-        center = center.to(aligned_pos.device)
-
-        # Find nearest patch_size points to this center
-        dists = (aligned_pos - center).norm(dim=1)
-        _, idx = dists.topk(patch_size, largest=False)
-
-        patch_pos = aligned_pos[idx]   # [patch_size, 3]
-
-        # Compute normals in same space as training
+        patch_pos = aligned_pos[chunk_idx]
         patch_data = Data(pos=patch_pos)
         patch_data = compute_normals(patch_data)
-        patch_data.batch = torch.zeros(
-            patch_size, dtype=torch.long
-        )
+        patch_data.batch = torch.zeros(patch_size, dtype=torch.long)
         patch_data = patch_data.to(device)
 
         with torch.no_grad():
-            logits = model(patch_data).cpu()   # [patch_size, 3]
+            logits = model(patch_data).cpu()
 
-        # Points near the patch center get higher weight
-        # — they had more context around them
+        # All points in coverage pass get weight 1.0
+        all_logits[chunk_idx] += logits
+        all_counts[chunk_idx] += 1.0
+
+    # ── Step 2: Spatial overlap pass ────────────────────────────────
+    # Now add spatially coherent patches centered across the jaw.
+    # These improve boundary smoothness by letting boundary points
+    # appear in multiple spatially-aware contexts.
+    # Since Step 1 already covered everything, these are pure bonus.
+    x_coords = aligned_pos[:, 0]
+    y_coords = aligned_pos[:, 1]
+
+    centers_x = torch.linspace(
+        x_coords.min(), x_coords.max(), num_patches
+    )
+    centers_y = torch.linspace(
+        y_coords.min(), y_coords.max(), num_patches // 2
+    )
+
+    center_points = []
+    for cx in centers_x:
+        # Use actual jaw points closest to each X position
+        # so centers are never floating in empty space
+        closest = (x_coords - cx).abs().argmin()
+        center_points.append(aligned_pos[closest])
+
+    for cy in centers_y:
+        closest = (y_coords - cy).abs().argmin()
+        center_points.append(aligned_pos[closest])
+
+    for center in center_points:
+        dists = (aligned_pos - center).norm(dim=1)
+        _, idx = dists.topk(patch_size, largest=False)
+
+        patch_pos = aligned_pos[idx]
+        patch_data = Data(pos=patch_pos)
+        patch_data = compute_normals(patch_data)
+        patch_data.batch = torch.zeros(patch_size, dtype=torch.long)
+        patch_data = patch_data.to(device)
+
+        with torch.no_grad():
+            logits = model(patch_data).cpu()
+
+        # Weight by proximity to patch center —
+        # points near center had full spatial context
         center_dists = dists[idx]
         max_dist = center_dists.max().clamp(min=1e-8)
-        weights = (1.0 - center_dists /
-                   max_dist).clamp(min=0.1)  # [patch_size]
+        weights = (1.0 - center_dists / max_dist).clamp(min=0.1)
 
         all_logits[idx] += logits * weights.unsqueeze(1)
         all_counts[idx] += weights
 
-    # Handle uncovered points
-    uncovered = all_counts == 0
-    if uncovered.any():
-        covered_pos = aligned_pos[~uncovered]
-        covered_logits = all_logits[~uncovered] / \
-            all_counts[~uncovered].unsqueeze(1)
-        interp = smooth_upsample(covered_pos, covered_logits,
-                                 aligned_pos[uncovered], k=5)
-        all_logits[uncovered] = interp
-        all_counts[uncovered] = 1
-
-    final_logits = all_logits / all_counts.unsqueeze(1).clamp(min=1)
+    # ── Step 3: Final prediction ─────────────────────────────────────
+    # all_counts is guaranteed >= 1 for every point after Step 1
+    # so no uncovered point handling needed
+    final_logits = all_logits / all_counts.unsqueeze(1)
     return final_logits
 
 
@@ -182,7 +186,7 @@ def bulk_label_data(input_dir="../data/unlabeled", output_dir="../data/labeled")
                 model, aligned_pos, device,
                 patch_size=config.NUM_POINTS_GLOBAL,
                 overlap=0.4,
-                num_patches=20
+                num_patches=25
             )
             high_res_preds = torch.argmax(final_logits, dim=1).numpy()
 
