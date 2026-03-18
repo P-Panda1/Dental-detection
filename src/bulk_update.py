@@ -185,7 +185,7 @@ def bulk_label_data(input_dir="../data/unlabeled", output_dir="../data/labeled")
             final_logits = patch_inference(
                 model, aligned_pos, device,
                 patch_size=config.NUM_POINTS_GLOBAL,
-                num_patches=24   # 12 overlap patches on top of full coverage is plenty
+                num_patches=16   # 12 overlap patches on top of full coverage is plenty
             )
             high_res_preds = torch.argmax(final_logits, dim=1).numpy()
 
